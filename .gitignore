@@ -1,3 +1,4 @@
 .env
-storm/
-.storm/
+.env.*
+!.env.example
+.idea/

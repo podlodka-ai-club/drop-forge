@@ -22,7 +22,8 @@
 - [ ] 3.5 Run Codex CLI in the cloned repository and stream all Codex stdout/stderr to the console.
 - [ ] 3.6 Inspect `git status --short` after Codex; stop with a contextual error when no changes were produced.
 - [ ] 3.7 Create a branch, add changes, commit, push, create a PR through `gh pr create`, parse the PR URL, log it, and return it.
-- [ ] 3.8 Support cleanup of the temp directory by default and an environment flag to retain it for debugging.
+- [ ] 3.8 Add a separate PR comment with open implementation questions when questions are configured or produced during the run.
+- [ ] 3.9 Support cleanup of the temp directory by default and an environment flag to retain it for debugging.
 
 ## 4. CLI Integration
 
@@ -32,7 +33,7 @@
 
 ## 5. Verification
 
-- [ ] 5.1 Add unit tests for the proposal runner happy path, Codex failure, git clone failure, missing changes, and PR creation failure.
+- [ ] 5.1 Add unit tests for the proposal runner happy path, Codex failure, git clone failure, missing changes, PR creation failure, and open-questions comment failure.
 - [ ] 5.2 Add tests for generated branch slug and Codex prompt construction.
 - [ ] 5.3 Run `go fmt ./...`.
 - [ ] 5.4 Run `go test ./...`.

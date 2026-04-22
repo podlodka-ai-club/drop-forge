@@ -85,6 +85,21 @@ The system SHALL create a pull request in the target GitHub repository after Cod
 - **WHEN** the PR creation command exits with an error
 - **THEN** the system logs the PR creation output and returns an error that identifies the PR step
 
+### Requirement: Open questions PR comment
+The system SHALL add unresolved implementation questions as a separate comment on the created pull request when such questions are known at PR creation time.
+
+#### Scenario: Open questions are present
+- **WHEN** the workflow creates a pull request and the runner has one or more open questions
+- **THEN** the system publishes those questions as a pull request comment and logs the comment creation step
+
+#### Scenario: No open questions are present
+- **WHEN** the workflow creates a pull request and the runner has no open questions
+- **THEN** the system does not create an empty questions comment and still returns the pull request URL
+
+#### Scenario: Open questions comment fails
+- **WHEN** the pull request is created but publishing the open questions comment fails
+- **THEN** the system returns an error that identifies the comment step and logs the comment creation output
+
 ### Requirement: Testable command execution
 The proposal runner module SHALL allow tests to replace external command execution so unit tests do not require real GitHub access, Codex CLI, or network calls.
 

@@ -1,0 +1,518 @@
+package proposalrunner
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"net/url"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"time"
+
+	"orchv3/internal/commandrunner"
+	"orchv3/internal/config"
+	"orchv3/internal/steplog"
+)
+
+const (
+	defaultTempPattern = "orchv3-proposal-*"
+	maxSlugLength      = 48
+)
+
+type Runner struct {
+	Config  config.ProposalRunnerConfig
+	Command commandrunner.Runner
+	Stdout  io.Writer
+	Stderr  io.Writer
+
+	MkdirTemp func(dir string, pattern string) (string, error)
+	RemoveAll func(path string) error
+	Now       func() time.Time
+}
+
+func New(cfg config.ProposalRunnerConfig) *Runner {
+	return &Runner{
+		Config:    cfg,
+		Command:   commandrunner.ExecRunner{LogWriter: os.Stdout},
+		Stdout:    os.Stdout,
+		Stderr:    os.Stderr,
+		MkdirTemp: os.MkdirTemp,
+		RemoveAll: os.RemoveAll,
+		Now:       time.Now,
+	}
+}
+
+func (runner *Runner) Run(ctx context.Context, taskDescription string) (prURL string, err error) {
+	taskDescription = strings.TrimSpace(taskDescription)
+	if taskDescription == "" {
+		return "", errors.New("proposal task description must not be empty")
+	}
+
+	if err := runner.Config.Validate(); err != nil {
+		return "", fmt.Errorf("validate proposal runner config: %w", err)
+	}
+
+	command := runner.commandRunner()
+	stdout := writerOrDiscard(runner.Stdout)
+	stderr := writerOrDiscard(runner.Stderr)
+	logger := steplog.New(stdout)
+
+	tempDir, err := runner.mkdirTemp("", defaultTempPattern)
+	if err != nil {
+		return "", fmt.Errorf("create temp dir: %w", err)
+	}
+
+	logger.Printf("temp", "created %s", tempDir)
+	defer func() {
+		if !runner.Config.CleanupTemp {
+			logger.Printf("temp", "preserving %s", tempDir)
+			return
+		}
+
+		if cleanupErr := runner.removeAll(tempDir); cleanupErr != nil {
+			logger.Printf("temp", "cleanup failed for %s: %v", tempDir, cleanupErr)
+			if err == nil {
+				err = fmt.Errorf("cleanup temp dir %s: %w", tempDir, cleanupErr)
+			}
+			return
+		}
+
+		logger.Printf("temp", "removed %s", tempDir)
+	}()
+
+	cloneDir := filepath.Join(tempDir, "repo")
+	logger.Printf("git", "cloning %s into %s", runner.Config.RepositoryURL, cloneDir)
+	if err := command.Run(ctx, commandrunner.Command{
+		Name:   runner.Config.GitPath,
+		Args:   []string{"clone", runner.Config.RepositoryURL, cloneDir},
+		Dir:    tempDir,
+		Stdout: stdout,
+		Stderr: stderr,
+	}); err != nil {
+		return "", fmt.Errorf("git clone: %w", err)
+	}
+
+	prompt := BuildCodexPrompt(taskDescription)
+	logger.Printf("codex", "prompt:\n%s", prompt)
+	if err := command.Run(ctx, commandrunner.Command{
+		Name:   runner.Config.CodexPath,
+		Args:   CodexArgs(cloneDir),
+		Dir:    cloneDir,
+		Stdin:  strings.NewReader(prompt),
+		Stdout: stdout,
+		Stderr: stderr,
+	}); err != nil {
+		return "", fmt.Errorf("codex proposal: %w", err)
+	}
+
+	status, err := runner.gitStatus(ctx, command, cloneDir, stdout, stderr)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(status) == "" {
+		return "", errors.New("git status: no changes produced by codex")
+	}
+	logger.Printf("git", "status:\n%s", strings.TrimRight(status, "\n"))
+
+	branchName := BuildBranchName(runner.Config.BranchPrefix, taskDescription, runner.now())
+	prTitle := BuildPRTitle(runner.Config.PRTitlePrefix, taskDescription)
+	prBody := BuildPRBody(taskDescription)
+
+	gitCommands := []commandrunner.Command{
+		{
+			Name:   runner.Config.GitPath,
+			Args:   []string{"checkout", "-b", branchName},
+			Dir:    cloneDir,
+			Stdout: stdout,
+			Stderr: stderr,
+		},
+		{
+			Name:   runner.Config.GitPath,
+			Args:   []string{"add", "-A"},
+			Dir:    cloneDir,
+			Stdout: stdout,
+			Stderr: stderr,
+		},
+		{
+			Name:   runner.Config.GitPath,
+			Args:   []string{"commit", "-m", prTitle},
+			Dir:    cloneDir,
+			Stdout: stdout,
+			Stderr: stderr,
+		},
+		{
+			Name:   runner.Config.GitPath,
+			Args:   []string{"push", "-u", runner.Config.RemoteName, branchName},
+			Dir:    cloneDir,
+			Stdout: stdout,
+			Stderr: stderr,
+		},
+	}
+
+	for _, gitCommand := range gitCommands {
+		logger.Printf("git", "%s", strings.Join(append([]string{gitCommand.Name}, gitCommand.Args...), " "))
+		if err := command.Run(ctx, gitCommand); err != nil {
+			return "", fmt.Errorf("git %s: %w", gitCommand.Args[0], err)
+		}
+	}
+
+	prURL, err = runner.createPullRequest(ctx, command, cloneDir, branchName, prTitle, prBody, stdout, stderr)
+	if err != nil {
+		return "", err
+	}
+	logger.Printf("github", "created PR %s", prURL)
+
+	if err := runner.commentOpenQuestions(ctx, command, cloneDir, prURL, stdout, stderr); err != nil {
+		return "", err
+	}
+
+	return prURL, nil
+}
+
+func BuildCodexPrompt(taskDescription string) string {
+	return fmt.Sprintf(`Use the openspec-propose skill to create a complete OpenSpec proposal for the task below.
+
+Task description:
+%s
+`, strings.TrimSpace(taskDescription))
+}
+
+func CodexArgs(cloneDir string) []string {
+	return []string{"exec", "--sandbox", "danger-full-access", "--cd", cloneDir, "-"}
+}
+
+func BuildBranchName(prefix string, taskDescription string, now time.Time) string {
+	prefix = strings.Trim(strings.TrimSpace(prefix), "/")
+	if prefix == "" {
+		prefix = "codex/proposal"
+	}
+
+	timestamp := now.UTC().Format("20060102150405")
+	return prefix + "/" + timestamp + "-" + slugify(taskDescription)
+}
+
+func BuildPRTitle(prefix string, taskDescription string) string {
+	prefix = strings.TrimSpace(prefix)
+	description := firstLine(taskDescription)
+	descriptionRunes := []rune(description)
+	if len(descriptionRunes) > 72 {
+		description = strings.TrimSpace(string(descriptionRunes[:72]))
+	}
+
+	if prefix == "" {
+		return description
+	}
+
+	return strings.TrimSpace(prefix + " " + description)
+}
+
+func BuildPRBody(taskDescription string) string {
+	return fmt.Sprintf("Generated by orchv3 proposal runner.\n\nTask:\n%s\n", strings.TrimSpace(taskDescription))
+}
+
+func (runner *Runner) gitStatus(ctx context.Context, command commandrunner.Runner, cloneDir string, stdout io.Writer, stderr io.Writer) (string, error) {
+	var status bytes.Buffer
+	err := command.Run(ctx, commandrunner.Command{
+		Name:   runner.Config.GitPath,
+		Args:   []string{"status", "--short"},
+		Dir:    cloneDir,
+		Stdout: io.MultiWriter(stdout, &status),
+		Stderr: stderr,
+	})
+	if err != nil {
+		return "", fmt.Errorf("git status: %w", err)
+	}
+
+	return status.String(), nil
+}
+
+func (runner *Runner) createPullRequest(ctx context.Context, command commandrunner.Runner, cloneDir string, branchName string, title string, body string, stdout io.Writer, stderr io.Writer) (string, error) {
+	var prOutput bytes.Buffer
+	args := []string{
+		"pr", "create",
+		"--base", runner.Config.BaseBranch,
+		"--head", branchName,
+		"--title", title,
+		"--body", body,
+	}
+
+	steplog.New(stdout).Printf("github", "%s %s", runner.Config.GHPath, strings.Join(args, " "))
+	if err := command.Run(ctx, commandrunner.Command{
+		Name:   runner.Config.GHPath,
+		Args:   args,
+		Dir:    cloneDir,
+		Stdout: io.MultiWriter(stdout, &prOutput),
+		Stderr: stderr,
+	}); err != nil {
+		return "", fmt.Errorf("github pr create: %w", err)
+	}
+
+	prURL, err := parsePRURL(prOutput.String())
+	if err != nil {
+		return "", fmt.Errorf("github pr create: %w", err)
+	}
+
+	return prURL, nil
+}
+
+func (runner *Runner) commentOpenQuestions(ctx context.Context, command commandrunner.Runner, cloneDir string, prURL string, stdout io.Writer, stderr io.Writer) error {
+	questions, err := CollectOpenQuestions(cloneDir)
+	if err != nil {
+		return fmt.Errorf("collect open questions: %w", err)
+	}
+	if len(questions) == 0 {
+		return nil
+	}
+
+	body := BuildOpenQuestionsComment(questions)
+	if !strings.Contains(body, "- ") {
+		return nil
+	}
+
+	args := []string{"pr", "comment", prURL, "--body", body}
+	steplog.New(stdout).Printf("github", "%s %s", runner.Config.GHPath, strings.Join(args, " "))
+
+	if err := command.Run(ctx, commandrunner.Command{
+		Name:   runner.Config.GHPath,
+		Args:   args,
+		Dir:    cloneDir,
+		Stdout: stdout,
+		Stderr: stderr,
+	}); err != nil {
+		return fmt.Errorf("github pr comment: %w", err)
+	}
+
+	return nil
+}
+
+func CollectOpenQuestions(root string) ([]string, error) {
+	searchRoot := filepath.Join(root, "openspec", "changes")
+	if info, err := os.Stat(searchRoot); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	} else if !info.IsDir() {
+		return nil, nil
+	}
+
+	var questions []string
+	seen := make(map[string]struct{})
+	err := filepath.WalkDir(searchRoot, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || filepath.Ext(path) != ".md" {
+			return nil
+		}
+
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", path, err)
+		}
+
+		for _, question := range ExtractOpenQuestions(string(content)) {
+			key := strings.ToLower(question)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			questions = append(questions, question)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return questions, nil
+}
+
+func ExtractOpenQuestions(content string) []string {
+	lines := strings.Split(content, "\n")
+	var questions []string
+	inSection := false
+	sectionLevel := 0
+
+	for _, rawLine := range lines {
+		line := strings.TrimSpace(rawLine)
+		if level, title, ok := parseMarkdownHeading(line); ok {
+			inSection = isOpenQuestionsHeading(title)
+			sectionLevel = level
+			continue
+		}
+
+		if !inSection || line == "" {
+			continue
+		}
+
+		if level, _, ok := parseMarkdownHeading(line); ok && level <= sectionLevel {
+			inSection = false
+			continue
+		}
+
+		question := normalizeQuestionLine(line)
+		if question != "" {
+			questions = append(questions, question)
+		}
+	}
+
+	return questions
+}
+
+func BuildOpenQuestionsComment(questions []string) string {
+	var builder strings.Builder
+	builder.WriteString("Open implementation questions:\n")
+	for _, question := range questions {
+		question = strings.TrimSpace(question)
+		if question != "" {
+			builder.WriteString("- ")
+			builder.WriteString(question)
+			builder.WriteByte('\n')
+		}
+	}
+
+	return strings.TrimRight(builder.String(), "\n")
+}
+
+func parseMarkdownHeading(line string) (level int, title string, ok bool) {
+	if !strings.HasPrefix(line, "#") {
+		return 0, "", false
+	}
+
+	for level < len(line) && line[level] == '#' {
+		level++
+	}
+	if level == 0 || level > 6 || level >= len(line) || line[level] != ' ' {
+		return 0, "", false
+	}
+
+	return level, strings.TrimSpace(line[level:]), true
+}
+
+func isOpenQuestionsHeading(title string) bool {
+	title = strings.ToLower(strings.TrimSpace(title))
+	return strings.Contains(title, "open") && strings.Contains(title, "question") ||
+		strings.Contains(title, "открыт") && strings.Contains(title, "вопрос")
+}
+
+func normalizeQuestionLine(line string) string {
+	line = strings.TrimSpace(line)
+	line = strings.TrimPrefix(line, "- [ ] ")
+	line = strings.TrimPrefix(line, "- [x] ")
+	line = strings.TrimLeft(line, "-*+ \t")
+
+	numberedPrefix := regexp.MustCompile(`^\d+[\.)]\s+`)
+	line = numberedPrefix.ReplaceAllString(line, "")
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return ""
+	}
+
+	switch strings.ToLower(line) {
+	case "none", "n/a", "нет", "нет вопросов", "не выявлены":
+		return ""
+	default:
+		return line
+	}
+}
+
+func parsePRURL(output string) (string, error) {
+	output = strings.TrimSpace(output)
+	if output == "" {
+		return "", errors.New("empty PR URL output")
+	}
+
+	var payload struct {
+		URL string `json:"url"`
+	}
+	if strings.HasPrefix(output, "{") {
+		if err := json.Unmarshal([]byte(output), &payload); err == nil && payload.URL != "" {
+			return payload.URL, nil
+		}
+	}
+
+	if parsedURL, err := url.ParseRequestURI(output); err == nil && parsedURL.Scheme != "" && parsedURL.Host != "" {
+		return output, nil
+	}
+
+	urlPattern := regexp.MustCompile(`https?://[^\s"']+`)
+	if match := urlPattern.FindString(output); match != "" {
+		return match, nil
+	}
+
+	return "", errors.New("PR URL missing in gh output")
+}
+
+func (runner *Runner) commandRunner() commandrunner.Runner {
+	if runner.Command != nil {
+		return runner.Command
+	}
+
+	return commandrunner.ExecRunner{LogWriter: writerOrDiscard(runner.Stdout)}
+}
+
+func (runner *Runner) mkdirTemp(dir string, pattern string) (string, error) {
+	if runner.MkdirTemp != nil {
+		return runner.MkdirTemp(dir, pattern)
+	}
+
+	return os.MkdirTemp(dir, pattern)
+}
+
+func (runner *Runner) removeAll(path string) error {
+	if runner.RemoveAll != nil {
+		return runner.RemoveAll(path)
+	}
+
+	return os.RemoveAll(path)
+}
+
+func (runner *Runner) now() time.Time {
+	if runner.Now != nil {
+		return runner.Now()
+	}
+
+	return time.Now()
+}
+
+func writerOrDiscard(writer io.Writer) io.Writer {
+	if writer == nil {
+		return io.Discard
+	}
+
+	return writer
+}
+
+func slugify(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	re := regexp.MustCompile(`[^a-z0-9]+`)
+	value = re.ReplaceAllString(value, "-")
+	value = strings.Trim(value, "-")
+	if value == "" {
+		value = "task"
+	}
+	if len(value) > maxSlugLength {
+		value = strings.Trim(value[:maxSlugLength], "-")
+	}
+
+	return value
+}
+
+func firstLine(value string) string {
+	for _, line := range strings.Split(strings.TrimSpace(value), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			return line
+		}
+	}
+
+	return "OpenSpec proposal"
+}

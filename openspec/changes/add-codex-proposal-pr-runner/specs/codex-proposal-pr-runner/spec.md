@@ -30,12 +30,12 @@ The system SHALL read runtime configuration from `.env` with `github.com/joho/go
 - **WHEN** `.env` contains values that rely on supported godotenv syntax such as quoted strings or inline comments
 - **THEN** the system loads those values using godotenv-compatible parsing
 
-### Requirement: Environment variable templates
-The repository SHALL include `env.dist` with all required configuration keys and SHALL keep `.env.example` synchronized without secrets or default values.
+### Requirement: Environment variable template
+The repository SHALL keep `.env.example` synchronized with all supported configuration keys without secrets or default values.
 
-#### Scenario: Templates list runtime keys
+#### Scenario: Template lists runtime keys
 - **WHEN** a developer needs to configure the proposal runner locally
-- **THEN** `env.dist` and `.env.example` list the required keys without committed values
+- **THEN** `.env.example` lists the required keys without committed values
 
 ### Requirement: Temporary clone workspace
 The system SHALL create a unique temporary directory for each run, clone the configured GitHub repository into that directory using `git clone`, and preserve the temporary directory by default for diagnostics.
@@ -57,11 +57,11 @@ The system SHALL create a unique temporary directory for each run, clone the con
 - **THEN** the system logs the clone output and returns an error that identifies the clone step
 
 ### Requirement: Codex CLI openspec propose execution
-The system SHALL run Codex CLI using the current local non-interactive command format `codex exec --cd <clone-dir> -`, with the prompt passed through stdin and containing the `openspec-propose` skill instruction plus the original task description.
+The system SHALL run Codex CLI using the current local non-interactive command format `codex exec --sandbox danger-full-access --cd <clone-dir> -`, with the prompt passed through stdin and containing the `openspec-propose` skill instruction plus the original task description.
 
 #### Scenario: Codex CLI receives prompt
 - **WHEN** the workflow reaches the Codex step
-- **THEN** the system logs the prompt and invokes `codex exec --cd <clone-dir> -` with that prompt on stdin
+- **THEN** the system logs the prompt and invokes `codex exec --sandbox danger-full-access --cd <clone-dir> -` with that prompt on stdin
 
 #### Scenario: Codex CLI succeeds
 - **WHEN** Codex CLI exits successfully after creating OpenSpec artifacts
@@ -102,14 +102,14 @@ The system SHALL create a pull request through the authenticated `gh` CLI in the
 - **THEN** the system logs the PR creation output and returns an error that identifies the PR step
 
 ### Requirement: Open questions PR comment
-The system SHALL add unresolved implementation questions as a separate comment on the created pull request when such questions are known at PR creation time.
+The system SHALL detect unresolved implementation questions in generated OpenSpec markdown artifacts and add them as a separate comment on the created pull request.
 
 #### Scenario: Open questions are present
-- **WHEN** the workflow creates a pull request and the runner has one or more open questions
+- **WHEN** the workflow creates a pull request and generated OpenSpec artifacts contain an `Open Questions` or `Открытые вопросы` section
 - **THEN** the system publishes those questions as a pull request comment and logs the comment creation step
 
 #### Scenario: No open questions are present
-- **WHEN** the workflow creates a pull request and the runner has no open questions
+- **WHEN** the workflow creates a pull request and generated OpenSpec artifacts do not contain open questions
 - **THEN** the system does not create an empty questions comment and still returns the pull request URL
 
 #### Scenario: Open questions comment fails

@@ -6,6 +6,8 @@ import (
 	"io"
 	"os/exec"
 	"strings"
+
+	"orchv3/internal/steplog"
 )
 
 type Command struct {
@@ -31,7 +33,7 @@ func (runner ExecRunner) Run(ctx context.Context, command Command) error {
 	}
 
 	if runner.LogWriter != nil {
-		fmt.Fprintf(runner.LogWriter, "[command] %s\n", commandLine(command))
+		steplog.New(runner.LogWriter).Infof("command", "%s", commandLine(command))
 	}
 
 	cmd := exec.CommandContext(ctx, command.Name, command.Args...)

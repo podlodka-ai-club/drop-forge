@@ -39,7 +39,6 @@ type Runner struct {
 func New(cfg config.ProposalRunnerConfig) *Runner {
 	return &Runner{
 		Config:    cfg,
-		Command:   commandrunner.ExecRunner{LogWriter: os.Stdout},
 		Stdout:    os.Stdout,
 		Stderr:    os.Stderr,
 		MkdirTemp: os.MkdirTemp,
@@ -62,52 +61,53 @@ func (runner *Runner) Run(ctx context.Context, taskDescription string) (prURL st
 	stdout := writerOrDiscard(runner.Stdout)
 	stderr := writerOrDiscard(runner.Stderr)
 	logger := steplog.New(stdout)
+	defer func() {
+		if err != nil {
+			logger.Errorf("proposalrunner", "workflow failed: %v", err)
+		}
+	}()
 
 	tempDir, err := runner.mkdirTemp("", defaultTempPattern)
 	if err != nil {
 		return "", fmt.Errorf("create temp dir: %w", err)
 	}
 
-	logger.Printf("temp", "created %s", tempDir)
+	logger.Infof("temp", "created %s", tempDir)
 	defer func() {
 		if !runner.Config.CleanupTemp {
-			logger.Printf("temp", "preserving %s", tempDir)
+			logger.Infof("temp", "preserving %s", tempDir)
 			return
 		}
 
 		if cleanupErr := runner.removeAll(tempDir); cleanupErr != nil {
-			logger.Printf("temp", "cleanup failed for %s: %v", tempDir, cleanupErr)
+			logger.Errorf("temp", "cleanup failed for %s: %v", tempDir, cleanupErr)
 			if err == nil {
 				err = fmt.Errorf("cleanup temp dir %s: %w", tempDir, cleanupErr)
 			}
 			return
 		}
 
-		logger.Printf("temp", "removed %s", tempDir)
+		logger.Infof("temp", "removed %s", tempDir)
 	}()
 
 	cloneDir := filepath.Join(tempDir, "repo")
-	logger.Printf("git", "cloning %s into %s", runner.Config.RepositoryURL, cloneDir)
-	if err := command.Run(ctx, commandrunner.Command{
-		Name:   runner.Config.GitPath,
-		Args:   []string{"clone", runner.Config.RepositoryURL, cloneDir},
-		Dir:    tempDir,
-		Stdout: stdout,
-		Stderr: stderr,
-	}); err != nil {
+	logger.Infof("git", "cloning %s into %s", runner.Config.RepositoryURL, cloneDir)
+	if err := runLoggedCommand(ctx, command, commandrunner.Command{
+		Name: runner.Config.GitPath,
+		Args: []string{"clone", runner.Config.RepositoryURL, cloneDir},
+		Dir:  tempDir,
+	}, "git", stdout, stderr); err != nil {
 		return "", fmt.Errorf("git clone: %w", err)
 	}
 
 	prompt := BuildCodexPrompt(taskDescription)
-	logger.Printf("codex", "prompt:\n%s", prompt)
-	if err := command.Run(ctx, commandrunner.Command{
-		Name:   runner.Config.CodexPath,
-		Args:   CodexArgs(cloneDir),
-		Dir:    cloneDir,
-		Stdin:  strings.NewReader(prompt),
-		Stdout: stdout,
-		Stderr: stderr,
-	}); err != nil {
+	logger.Infof("codex", "prompt:\n%s", prompt)
+	if err := runLoggedCommand(ctx, command, commandrunner.Command{
+		Name:  runner.Config.CodexPath,
+		Args:  CodexArgs(cloneDir),
+		Dir:   cloneDir,
+		Stdin: strings.NewReader(prompt),
+	}, "codex", stdout, stderr); err != nil {
 		return "", fmt.Errorf("codex proposal: %w", err)
 	}
 
@@ -118,7 +118,7 @@ func (runner *Runner) Run(ctx context.Context, taskDescription string) (prURL st
 	if strings.TrimSpace(status) == "" {
 		return "", errors.New("git status: no changes produced by codex")
 	}
-	logger.Printf("git", "status:\n%s", strings.TrimRight(status, "\n"))
+	logger.Infof("git", "status:\n%s", strings.TrimRight(status, "\n"))
 
 	branchName := BuildBranchName(runner.Config.BranchPrefix, taskDescription, runner.now())
 	prTitle := BuildPRTitle(runner.Config.PRTitlePrefix, taskDescription)
@@ -126,38 +126,30 @@ func (runner *Runner) Run(ctx context.Context, taskDescription string) (prURL st
 
 	gitCommands := []commandrunner.Command{
 		{
-			Name:   runner.Config.GitPath,
-			Args:   []string{"checkout", "-b", branchName},
-			Dir:    cloneDir,
-			Stdout: stdout,
-			Stderr: stderr,
+			Name: runner.Config.GitPath,
+			Args: []string{"checkout", "-b", branchName},
+			Dir:  cloneDir,
 		},
 		{
-			Name:   runner.Config.GitPath,
-			Args:   []string{"add", "-A"},
-			Dir:    cloneDir,
-			Stdout: stdout,
-			Stderr: stderr,
+			Name: runner.Config.GitPath,
+			Args: []string{"add", "-A"},
+			Dir:  cloneDir,
 		},
 		{
-			Name:   runner.Config.GitPath,
-			Args:   []string{"commit", "-m", prTitle},
-			Dir:    cloneDir,
-			Stdout: stdout,
-			Stderr: stderr,
+			Name: runner.Config.GitPath,
+			Args: []string{"commit", "-m", prTitle},
+			Dir:  cloneDir,
 		},
 		{
-			Name:   runner.Config.GitPath,
-			Args:   []string{"push", "-u", runner.Config.RemoteName, branchName},
-			Dir:    cloneDir,
-			Stdout: stdout,
-			Stderr: stderr,
+			Name: runner.Config.GitPath,
+			Args: []string{"push", "-u", runner.Config.RemoteName, branchName},
+			Dir:  cloneDir,
 		},
 	}
 
 	for _, gitCommand := range gitCommands {
-		logger.Printf("git", "%s", strings.Join(append([]string{gitCommand.Name}, gitCommand.Args...), " "))
-		if err := command.Run(ctx, gitCommand); err != nil {
+		logger.Infof("git", "%s", strings.Join(append([]string{gitCommand.Name}, gitCommand.Args...), " "))
+		if err := runLoggedCommand(ctx, command, gitCommand, "git", stdout, stderr); err != nil {
 			return "", fmt.Errorf("git %s: %w", gitCommand.Args[0], err)
 		}
 	}
@@ -166,7 +158,7 @@ func (runner *Runner) Run(ctx context.Context, taskDescription string) (prURL st
 	if err != nil {
 		return "", err
 	}
-	logger.Printf("github", "created PR %s", prURL)
+	logger.Infof("github", "created PR %s", prURL)
 
 	if err := runner.commentOpenQuestions(ctx, command, cloneDir, prURL, stdout, stderr); err != nil {
 		return "", err
@@ -184,7 +176,7 @@ Task description:
 }
 
 func CodexArgs(cloneDir string) []string {
-	return []string{"exec", "--sandbox", "danger-full-access", "--cd", cloneDir, "-"}
+	return []string{"exec", "--json", "--sandbox", "danger-full-access", "--cd", cloneDir, "-"}
 }
 
 func BuildBranchName(prefix string, taskDescription string, now time.Time) string {
@@ -218,13 +210,12 @@ func BuildPRBody(taskDescription string) string {
 
 func (runner *Runner) gitStatus(ctx context.Context, command commandrunner.Runner, cloneDir string, stdout io.Writer, stderr io.Writer) (string, error) {
 	var status bytes.Buffer
-	err := command.Run(ctx, commandrunner.Command{
+	err := runLoggedCommand(ctx, command, commandrunner.Command{
 		Name:   runner.Config.GitPath,
 		Args:   []string{"status", "--short"},
 		Dir:    cloneDir,
-		Stdout: io.MultiWriter(stdout, &status),
-		Stderr: stderr,
-	})
+		Stdout: &status,
+	}, "git", stdout, stderr)
 	if err != nil {
 		return "", fmt.Errorf("git status: %w", err)
 	}
@@ -242,14 +233,13 @@ func (runner *Runner) createPullRequest(ctx context.Context, command commandrunn
 		"--body", body,
 	}
 
-	steplog.New(stdout).Printf("github", "%s %s", runner.Config.GHPath, strings.Join(args, " "))
-	if err := command.Run(ctx, commandrunner.Command{
+	steplog.New(stdout).Infof("github", "%s %s", runner.Config.GHPath, strings.Join(args, " "))
+	if err := runLoggedCommand(ctx, command, commandrunner.Command{
 		Name:   runner.Config.GHPath,
 		Args:   args,
 		Dir:    cloneDir,
-		Stdout: io.MultiWriter(stdout, &prOutput),
-		Stderr: stderr,
-	}); err != nil {
+		Stdout: &prOutput,
+	}, "github", stdout, stderr); err != nil {
 		return "", fmt.Errorf("github pr create: %w", err)
 	}
 
@@ -276,15 +266,13 @@ func (runner *Runner) commentOpenQuestions(ctx context.Context, command commandr
 	}
 
 	args := []string{"pr", "comment", prURL, "--body", body}
-	steplog.New(stdout).Printf("github", "%s %s", runner.Config.GHPath, strings.Join(args, " "))
+	steplog.New(stdout).Infof("github", "%s %s", runner.Config.GHPath, strings.Join(args, " "))
 
-	if err := command.Run(ctx, commandrunner.Command{
-		Name:   runner.Config.GHPath,
-		Args:   args,
-		Dir:    cloneDir,
-		Stdout: stdout,
-		Stderr: stderr,
-	}); err != nil {
+	if err := runLoggedCommand(ctx, command, commandrunner.Command{
+		Name: runner.Config.GHPath,
+		Args: args,
+		Dir:  cloneDir,
+	}, "github", stdout, stderr); err != nil {
 		return fmt.Errorf("github pr comment: %w", err)
 	}
 
@@ -457,6 +445,29 @@ func (runner *Runner) commandRunner() commandrunner.Runner {
 	}
 
 	return commandrunner.ExecRunner{LogWriter: writerOrDiscard(runner.Stdout)}
+}
+
+func runLoggedCommand(ctx context.Context, runner commandrunner.Runner, command commandrunner.Command, module string, stdout io.Writer, stderr io.Writer) error {
+	stdoutLog := steplog.New(stdout).LineWriter(module)
+	stderrLog := steplog.New(stderr).LineWriter(module)
+
+	stdoutWriters := []io.Writer{stdoutLog}
+	if command.Stdout != nil {
+		stdoutWriters = append(stdoutWriters, command.Stdout)
+	}
+	command.Stdout = io.MultiWriter(stdoutWriters...)
+
+	stderrWriters := []io.Writer{stderrLog}
+	if command.Stderr != nil {
+		stderrWriters = append(stderrWriters, command.Stderr)
+	}
+	command.Stderr = io.MultiWriter(stderrWriters...)
+
+	err := runner.Run(ctx, command)
+	stdoutLog.Flush()
+	stderrLog.Flush()
+
+	return err
 }
 
 func (runner *Runner) mkdirTemp(dir string, pattern string) (string, error) {

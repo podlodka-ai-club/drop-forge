@@ -12,7 +12,7 @@ The system SHALL expose a proposal runner module that accepts a task description
 - **THEN** the system returns an error before creating a temp directory or running external commands
 
 ### Requirement: Runtime configuration from environment files
-The system SHALL read runtime configuration from `.env` and environment variables, including the target GitHub repository, branch settings, and external command paths.
+The system SHALL read runtime configuration from `.env` with `github.com/joho/godotenv` and environment variables, including the target GitHub repository, branch settings, and external command paths.
 
 #### Scenario: Repository is configured in env
 - **WHEN** `.env` or the process environment contains the target repository setting
@@ -25,6 +25,10 @@ The system SHALL read runtime configuration from `.env` and environment variable
 #### Scenario: Environment overrides dot env
 - **WHEN** the same configuration key exists in `.env` and in the process environment
 - **THEN** the system uses the process environment value
+
+#### Scenario: Dot env syntax is parsed by godotenv
+- **WHEN** `.env` contains values that rely on supported godotenv syntax such as quoted strings or inline comments
+- **THEN** the system loads those values using godotenv-compatible parsing
 
 ### Requirement: Environment variable templates
 The repository SHALL include `env.dist` with all required configuration keys and SHALL keep `.env.example` synchronized without secrets or default values.

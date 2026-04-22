@@ -5,7 +5,7 @@ license: MIT
 compatibility: Requires openspec CLI.
 metadata:
   author: openspec
-  version: "1.1"
+  version: "1.0"
   generatedBy: "1.3.0"
 ---
 
@@ -33,26 +33,13 @@ When ready to implement, run /opsx:apply
 
    **IMPORTANT**: Do NOT proceed without understanding what the user wants to build.
 
-2. **Prepare git state and create a fresh branch**
-
-   As soon as the change name is known, bring the repository to a clean state on `main`, then create a new branch with the same name as the change:
-   ```bash
-   git checkout main
-   git fetch origin
-   git reset --hard origin/main
-   git clean -df
-   git checkout -b "<name>"
-   ```
-
-   This step is mandatory and happens before any `openspec` artifacts are created.
-
-3. **Create the change directory**
+2. **Create the change directory**
    ```bash
    openspec new change "<name>"
    ```
    This creates a scaffolded change at `openspec/changes/<name>/` with `.openspec.yaml`.
 
-4. **Get the artifact build order**
+3. **Get the artifact build order**
    ```bash
    openspec status --change "<name>" --json
    ```
@@ -60,7 +47,7 @@ When ready to implement, run /opsx:apply
    - `applyRequires`: array of artifact IDs needed before implementation (e.g., `["tasks"]`)
    - `artifacts`: list of all artifacts with their status and dependencies
 
-5. **Create artifacts in sequence until apply-ready**
+4. **Create artifacts in sequence until apply-ready**
 
    Use the **TodoWrite tool** to track progress through the artifacts.
 
@@ -92,7 +79,7 @@ When ready to implement, run /opsx:apply
       - Use **AskUserQuestion tool** to clarify
       - Then continue with creation
 
-6. **Show final status**
+5. **Show final status**
    ```bash
    openspec status --change "<name>"
    ```
@@ -116,10 +103,8 @@ After completing all artifacts, summarize:
   - These guide what you write, but should never appear in the output
 
 **Guardrails**
-- Always prepare git state in this order before creating the change: `checkout main` → `fetch` → `reset --hard` → `clean -df` → `checkout -b <name>`
 - Create ALL artifacts needed for implementation (as defined by schema's `apply.requires`)
 - Always read dependency artifacts before creating a new one
 - If context is critically unclear, ask the user - but prefer making reasonable decisions to keep momentum
 - If a change with that name already exists, ask if user wants to continue it or create a new one
-- If the git branch `<name>` already exists, ask whether to reuse it or derive a new branch name before proceeding
 - Verify each artifact file exists after writing before proceeding to next

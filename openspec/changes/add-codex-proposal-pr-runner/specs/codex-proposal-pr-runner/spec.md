@@ -34,22 +34,30 @@ The repository SHALL include `env.dist` with all required configuration keys and
 - **THEN** `env.dist` and `.env.example` list the required keys without committed values
 
 ### Requirement: Temporary clone workspace
-The system SHALL create a unique temporary directory for each run and clone the configured GitHub repository into that directory using `git clone`.
+The system SHALL create a unique temporary directory for each run, clone the configured GitHub repository into that directory using `git clone`, and preserve the temporary directory by default for diagnostics.
 
 #### Scenario: Repository clone succeeds
 - **WHEN** the configured repository is reachable
-- **THEN** the system creates a temporary directory, clones the repository into it, and continues the workflow in the clone root
+- **THEN** the system creates a temporary directory, logs its path, clones the repository into it, and continues the workflow in the clone root
+
+#### Scenario: Default temp directory retention
+- **WHEN** the workflow finishes without an explicit cleanup setting
+- **THEN** the system leaves the temporary directory on disk and logs its path for diagnostics
+
+#### Scenario: Explicit temp cleanup
+- **WHEN** the workflow finishes with cleanup enabled by configuration
+- **THEN** the system removes the temporary directory and logs the cleanup result
 
 #### Scenario: Repository clone fails
 - **WHEN** `git clone` exits with an error
 - **THEN** the system logs the clone output and returns an error that identifies the clone step
 
 ### Requirement: Codex CLI openspec propose execution
-The system SHALL run Codex CLI in the cloned repository with the `openspec-propose` skill and a prompt containing the original task description.
+The system SHALL run Codex CLI using the current local non-interactive command format `codex exec --cd <clone-dir> -`, with the prompt passed through stdin and containing the `openspec-propose` skill instruction plus the original task description.
 
 #### Scenario: Codex CLI receives prompt
 - **WHEN** the workflow reaches the Codex step
-- **THEN** the system logs the prompt and invokes Codex CLI with that prompt in the cloned repository
+- **THEN** the system logs the prompt and invokes `codex exec --cd <clone-dir> -` with that prompt on stdin
 
 #### Scenario: Codex CLI succeeds
 - **WHEN** Codex CLI exits successfully after creating OpenSpec artifacts
@@ -71,11 +79,15 @@ The system SHALL log all workflow steps and Codex CLI interaction to the console
 - **THEN** the system forwards that output to the console without filtering it out
 
 ### Requirement: Pull request creation
-The system SHALL create a pull request in the target GitHub repository after Codex CLI produces changes and SHALL return the pull request URL.
+The system SHALL create a pull request through the authenticated `gh` CLI in the target GitHub repository after Codex CLI produces changes and SHALL return the pull request URL.
 
 #### Scenario: Pull request is created
 - **WHEN** Codex CLI succeeds and the cloned repository has changes to commit
-- **THEN** the system commits the changes, pushes a branch, creates a PR, logs the PR URL, and returns that URL to the caller
+- **THEN** the system commits the changes, pushes a branch, creates a PR through `gh`, logs the PR URL, and returns that URL to the caller
+
+#### Scenario: GitHub CLI is unavailable or unauthenticated
+- **WHEN** PR creation requires `gh` but `gh` is missing or not authenticated
+- **THEN** the system returns an error that identifies the GitHub CLI prerequisite
 
 #### Scenario: No changes were produced
 - **WHEN** Codex CLI succeeds but git status shows no changes

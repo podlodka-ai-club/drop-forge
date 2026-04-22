@@ -1,7 +1,7 @@
 ## 1. Configuration
 
 - [ ] 1.1 Extend `internal/config` with `.env` loading using the Go standard library and process environment override semantics.
-- [ ] 1.2 Add required proposal runner configuration fields: repository URL, base branch, remote name, branch prefix, PR title prefix, temp retention flag, and paths for `git`, `codex`, and `gh`.
+- [ ] 1.2 Add required proposal runner configuration fields: repository URL, base branch, remote name, branch prefix, PR title prefix, temp cleanup flag that is disabled by default, and paths for `git`, `codex`, and `gh`.
 - [ ] 1.3 Validate required configuration and return contextual errors for missing repository or invalid values.
 - [ ] 1.4 Add `env.dist` and update `.env.example` with all proposal runner keys, leaving values empty.
 - [ ] 1.5 Add table-driven tests for `.env` parsing, process environment precedence, and missing required settings.
@@ -23,7 +23,8 @@
 - [ ] 3.6 Inspect `git status --short` after Codex; stop with a contextual error when no changes were produced.
 - [ ] 3.7 Create a branch, add changes, commit, push, create a PR through `gh pr create`, parse the PR URL, log it, and return it.
 - [ ] 3.8 Add a separate PR comment with open implementation questions when questions are configured or produced during the run.
-- [ ] 3.9 Support cleanup of the temp directory by default and an environment flag to retain it for debugging.
+- [ ] 3.9 Use the current local Codex non-interactive format: `codex exec --cd <clone-dir> -` with prompt passed through stdin; do not add an ENV-based argv template in v1.
+- [ ] 3.10 Preserve the temp directory by default, log its path, and support an environment flag to enable cleanup.
 
 ## 4. CLI Integration
 
@@ -34,7 +35,7 @@
 ## 5. Verification
 
 - [ ] 5.1 Add unit tests for the proposal runner happy path, Codex failure, git clone failure, missing changes, PR creation failure, and open-questions comment failure.
-- [ ] 5.2 Add tests for generated branch slug and Codex prompt construction.
+- [ ] 5.2 Add tests for generated branch slug, Codex prompt construction, exact Codex argv, stdin prompt passing, and default temp directory retention.
 - [ ] 5.3 Run `go fmt ./...`.
 - [ ] 5.4 Run `go test ./...`.
 - [ ] 5.5 Manually document any external prerequisites that tests do not cover, including `git`, `codex`, and authenticated `gh`.

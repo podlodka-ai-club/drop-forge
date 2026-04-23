@@ -4,47 +4,58 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"strings"
 
 	"orchv3/internal/commandrunner"
 	"orchv3/internal/config"
 	"orchv3/internal/proposalrunner"
+	"orchv3/internal/steplog"
 )
 
 func main() {
+	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
+}
+
+func run(args []string, stdin *os.File, stdout io.Writer, stderr io.Writer) int {
+	logger := steplog.New(stderr)
+
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("load config: %v", err)
+		logger.Errorf("cli", "load config: %v", err)
+		return 1
 	}
 
-	taskDescription, err := readTaskDescription(os.Args[1:], os.Stdin)
+	taskDescription, err := readTaskDescription(args, stdin)
 	if err != nil {
-		log.Fatalf("read task description: %v", err)
+		logger.Errorf("cli", "read task description: %v", err)
+		return 1
 	}
 
 	if taskDescription != "" {
 		runner := proposalrunner.New(cfg.ProposalRunner)
-		runner.Stdout = os.Stderr
-		runner.Stderr = os.Stderr
-		runner.Command = commandrunner.ExecRunner{LogWriter: os.Stderr}
+		runner.Stdout = stderr
+		runner.Stderr = stderr
+		runner.Command = commandrunner.ExecRunner{LogWriter: stderr}
 
 		prURL, err := runner.Run(context.Background(), taskDescription)
 		if err != nil {
-			log.Fatalf("run proposal workflow: %v", err)
+			logger.Errorf("cli", "run proposal workflow: %v", err)
+			return 1
 		}
 
-		fmt.Fprintln(os.Stdout, prURL)
-		return
+		fmt.Fprintln(stdout, prURL)
+		return 0
 	}
 
-	log.Printf(
+	logger.Infof(
+		"cli",
 		"%s starting in %s on port %d",
 		cfg.AppName,
 		cfg.AppEnv,
 		cfg.HTTPPort,
 	)
+	return 0
 }
 
 func readTaskDescription(args []string, stdin *os.File) (string, error) {

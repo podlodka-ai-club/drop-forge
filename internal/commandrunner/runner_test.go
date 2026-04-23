@@ -3,6 +3,7 @@ package commandrunner
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -37,8 +38,15 @@ func TestExecRunnerStreamsOutputAndLogsCommand(t *testing.T) {
 		t.Fatalf("stderr = %q, want %q", stderr.String(), "stderr")
 	}
 
-	if !strings.Contains(logs.String(), "[command] sh -c") {
-		t.Fatalf("logs = %q, want command log", logs.String())
+	event := decodeLogEvent(t, logs.String())
+	if event.Module != "command" {
+		t.Fatalf("module = %q, want %q", event.Module, "command")
+	}
+	if event.Type != "info" {
+		t.Fatalf("type = %q, want %q", event.Type, "info")
+	}
+	if event.Message != "sh -c printf stdout; printf stderr >&2" {
+		t.Fatalf("message = %q, want command line", event.Message)
 	}
 }
 
@@ -84,4 +92,21 @@ func TestExecRunnerReturnsContextualError(t *testing.T) {
 	if !strings.Contains(err.Error(), "run sh -c exit 7") {
 		t.Fatalf("Run() error = %q, want command context", err.Error())
 	}
+}
+
+type logEvent struct {
+	Module  string `json:"module"`
+	Type    string `json:"type"`
+	Message string `json:"message"`
+}
+
+func decodeLogEvent(t *testing.T, output string) logEvent {
+	t.Helper()
+
+	var event logEvent
+	if err := json.Unmarshal(bytes.TrimSpace([]byte(output)), &event); err != nil {
+		t.Fatalf("decode log event %q: %v", output, err)
+	}
+
+	return event
 }

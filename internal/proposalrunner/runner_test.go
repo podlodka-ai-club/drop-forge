@@ -3,6 +3,7 @@ package proposalrunner
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -67,7 +68,7 @@ func TestRunnerHappyPathCreatesPRAndComment(t *testing.T) {
 	}
 
 	assertCommand(t, fake.commands[0], "git", []string{"clone", cfg.RepositoryURL, cloneDir}, tempDir)
-	assertCommand(t, fake.commands[1], "codex", []string{"exec", "--sandbox", "danger-full-access", "--cd", cloneDir, "-"}, cloneDir)
+	assertCommand(t, fake.commands[1], "codex", []string{"exec", "--json", "--sandbox", "danger-full-access", "--cd", cloneDir, "-"}, cloneDir)
 	if !strings.Contains(fake.commands[1].stdin, "openspec-propose") {
 		t.Fatalf("codex stdin = %q, want openspec-propose instruction", fake.commands[1].stdin)
 	}
@@ -93,12 +94,13 @@ func TestRunnerHappyPathCreatesPRAndComment(t *testing.T) {
 		"--body", "Open implementation questions:\n- Which reviewers should own the proposal?",
 	}, cloneDir)
 
-	if got := stdout.String(); !strings.Contains(got, "codex stdout") || !strings.Contains(got, "?? openspec/changes") {
-		t.Fatalf("stdout = %q, want forwarded command output", got)
-	}
-	if !strings.Contains(stderr.String(), "codex stderr") {
-		t.Fatalf("stderr = %q, want forwarded stderr", stderr.String())
-	}
+	stdoutEvents := decodeLogEvents(t, stdout.String())
+	assertLogMessage(t, stdoutEvents, "codex", "codex stdout")
+	assertLogMessage(t, stdoutEvents, "git", "?? openspec/changes/add-project-roadmap-workflow/proposal.md")
+	assertLogMessage(t, stdoutEvents, "github", "https://github.com/example/project/pull/42")
+
+	stderrEvents := decodeLogEvents(t, stderr.String())
+	assertLogMessage(t, stderrEvents, "codex", "codex stderr")
 }
 
 func TestRunnerRejectsEmptyDescriptionBeforeSideEffects(t *testing.T) {
@@ -169,6 +171,59 @@ func TestRunnerReturnsCodexFailure(t *testing.T) {
 	}
 }
 
+func TestRunnerLogsWorkflowFailureAsJSONError(t *testing.T) {
+	errBoom := errors.New("clone failed")
+	var stdout bytes.Buffer
+	runner := &Runner{
+		Config:  validConfig(),
+		Command: &fakeCommandRunner{responses: []fakeResponse{{err: errBoom}}},
+		Stdout:  &stdout,
+		Stderr:  io.Discard,
+		MkdirTemp: func(dir string, pattern string) (string, error) {
+			return "/tmp/orchv3-run", nil
+		},
+		RemoveAll: func(path string) error {
+			return nil
+		},
+		Now: fixedTime,
+	}
+
+	_, err := runner.Run(context.Background(), "Task")
+	if err == nil {
+		t.Fatal("Run() error = nil, want non-nil")
+	}
+
+	events := decodeLogEvents(t, stdout.String())
+	assertLogEvent(t, events, "proposalrunner", "error", "workflow failed: git clone")
+}
+
+func TestRunnerCommandOutputIsJSONOnly(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err := runWithOutput(t, []fakeResponse{
+		{},
+		{stdout: "codex line 1\ncodex line 2", stderr: "codex warning"},
+		{stdout: " M openspec/file.md\n"},
+		{},
+		{},
+		{},
+		{},
+		{stdout: "https://github.com/example/project/pull/42\n"},
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("Run() returned error: %v", err)
+	}
+
+	stdoutEvents := decodeLogEvents(t, stdout.String())
+	assertLogMessage(t, stdoutEvents, "codex", "codex line 1")
+	assertLogMessage(t, stdoutEvents, "codex", "codex line 2")
+	assertLogMessage(t, stdoutEvents, "git", " M openspec/file.md")
+	assertLogMessage(t, stdoutEvents, "github", "https://github.com/example/project/pull/42")
+
+	stderrEvents := decodeLogEvents(t, stderr.String())
+	assertLogMessage(t, stderrEvents, "codex", "codex warning")
+}
+
 func TestRunnerReturnsMissingChangesError(t *testing.T) {
 	err := runWithResponses(t, []fakeResponse{{}, {}, {stdout: "\n"}}, nil)
 	if err == nil || !strings.Contains(err.Error(), "no changes produced") {
@@ -234,7 +289,7 @@ func TestBuildHelpers(t *testing.T) {
 		t.Fatalf("BuildCodexPrompt() = %q", prompt)
 	}
 
-	if got, want := strings.Join(CodexArgs("/tmp/clone"), " "), "exec --sandbox danger-full-access --cd /tmp/clone -"; got != want {
+	if got, want := strings.Join(CodexArgs("/tmp/clone"), " "), "exec --json --sandbox danger-full-access --cd /tmp/clone -"; got != want {
 		t.Fatalf("CodexArgs() = %q, want %q", got, want)
 	}
 }
@@ -325,6 +380,18 @@ func TestCollectOpenQuestionsScansOpenSpecChanges(t *testing.T) {
 func runWithResponses(t *testing.T, responses []fakeResponse, cfg *config.ProposalRunnerConfig) error {
 	t.Helper()
 
+	return runWithResponsesAndWriters(t, responses, cfg, io.Discard, io.Discard)
+}
+
+func runWithOutput(t *testing.T, responses []fakeResponse, stdout io.Writer, stderr io.Writer) error {
+	t.Helper()
+
+	return runWithResponsesAndWriters(t, responses, nil, stdout, stderr)
+}
+
+func runWithResponsesAndWriters(t *testing.T, responses []fakeResponse, cfg *config.ProposalRunnerConfig, stdout io.Writer, stderr io.Writer) error {
+	t.Helper()
+
 	useCfg := validConfig()
 	if cfg != nil {
 		useCfg = *cfg
@@ -333,8 +400,8 @@ func runWithResponses(t *testing.T, responses []fakeResponse, cfg *config.Propos
 	runner := &Runner{
 		Config:  useCfg,
 		Command: &fakeCommandRunner{responses: responses},
-		Stdout:  io.Discard,
-		Stderr:  io.Discard,
+		Stdout:  stdout,
+		Stderr:  stderr,
 		MkdirTemp: func(dir string, pattern string) (string, error) {
 			return "/tmp/orchv3-run", nil
 		},
@@ -473,4 +540,48 @@ func writeFile(t *testing.T, path string, content string) {
 	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		t.Fatalf("write %s: %v", path, err)
 	}
+}
+
+type logEvent struct {
+	Module  string `json:"module"`
+	Type    string `json:"type"`
+	Message string `json:"message"`
+}
+
+func decodeLogEvents(t *testing.T, output string) []logEvent {
+	t.Helper()
+
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	events := make([]logEvent, 0, len(lines))
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+
+		var event logEvent
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatalf("decode log event %q: %v", line, err)
+		}
+		events = append(events, event)
+	}
+
+	return events
+}
+
+func assertLogMessage(t *testing.T, events []logEvent, module string, message string) {
+	t.Helper()
+
+	assertLogEvent(t, events, module, "info", message)
+}
+
+func assertLogEvent(t *testing.T, events []logEvent, module string, logType string, message string) {
+	t.Helper()
+
+	for _, event := range events {
+		if event.Module == module && event.Type == logType && strings.Contains(event.Message, message) {
+			return
+		}
+	}
+
+	t.Fatalf("missing log event module=%q type=%q message containing %q in %#v", module, logType, message, events)
 }

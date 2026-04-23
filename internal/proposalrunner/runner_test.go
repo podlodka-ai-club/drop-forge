@@ -17,15 +17,21 @@ import (
 	"orchv3/internal/config"
 )
 
-func TestRunnerHappyPathCreatesPRAndComment(t *testing.T) {
+func TestRunnerHappyPathCreatesPRAndCommentFromLastMessage(t *testing.T) {
 	task := "Add project roadmap workflow"
 	cfg := validConfig()
 	tempDir := filepath.Join(t.TempDir(), "orchv3-run")
 	cloneDir := filepath.Join(tempDir, "repo")
+	lastMessagePath := filepath.Join(tempDir, lastMessageFile)
 	fake := &fakeCommandRunner{
 		responses: []fakeResponse{
 			{},
-			{stdout: "codex stdout", stderr: "codex stderr"},
+			{
+				stdout:           "codex stdout",
+				stderr:           "codex stderr",
+				writeLastMessage: true,
+				lastMessage:      "\nFinal Codex response for PR comment.\n",
+			},
 			{stdout: "?? openspec/changes/add-project-roadmap-workflow/proposal.md\n"},
 			{},
 			{},
@@ -45,7 +51,6 @@ func TestRunnerHappyPathCreatesPRAndComment(t *testing.T) {
 		Stdout:  &stdout,
 		Stderr:  &stderr,
 		MkdirTemp: func(dir string, pattern string) (string, error) {
-			writeOpenQuestionsFile(t, cloneDir, "## Open Questions\n\n- Which reviewers should own the proposal?\n")
 			return tempDir, nil
 		},
 		RemoveAll: func(path string) error {
@@ -68,7 +73,7 @@ func TestRunnerHappyPathCreatesPRAndComment(t *testing.T) {
 	}
 
 	assertCommand(t, fake.commands[0], "git", []string{"clone", cfg.RepositoryURL, cloneDir}, tempDir)
-	assertCommand(t, fake.commands[1], "codex", []string{"exec", "--json", "--sandbox", "danger-full-access", "--cd", cloneDir, "-"}, cloneDir)
+	assertCommand(t, fake.commands[1], "codex", []string{"exec", "--json", "--sandbox", "danger-full-access", "--output-last-message", lastMessagePath, "--cd", cloneDir, "-"}, cloneDir)
 	if !strings.Contains(fake.commands[1].stdin, "openspec-propose") {
 		t.Fatalf("codex stdin = %q, want openspec-propose instruction", fake.commands[1].stdin)
 	}
@@ -91,13 +96,14 @@ func TestRunnerHappyPathCreatesPRAndComment(t *testing.T) {
 	}, cloneDir)
 	assertCommand(t, fake.commands[8], "gh", []string{
 		"pr", "comment", "https://github.com/example/project/pull/42",
-		"--body", "Open implementation questions:\n- Which reviewers should own the proposal?",
+		"--body", "Final Codex response for PR comment.",
 	}, cloneDir)
 
 	stdoutEvents := decodeLogEvents(t, stdout.String())
 	assertLogMessage(t, stdoutEvents, "codex", "codex stdout")
 	assertLogMessage(t, stdoutEvents, "git", "?? openspec/changes/add-project-roadmap-workflow/proposal.md")
 	assertLogMessage(t, stdoutEvents, "github", "https://github.com/example/project/pull/42")
+	assertLogMessage(t, stdoutEvents, "github", "created PR comment from final Codex response")
 
 	stderrEvents := decodeLogEvents(t, stderr.String())
 	assertLogMessage(t, stderrEvents, "codex", "codex stderr")
@@ -233,16 +239,35 @@ func TestRunnerReturnsMissingChangesError(t *testing.T) {
 
 func TestRunnerReturnsPRCreationFailure(t *testing.T) {
 	errBoom := errors.New("gh auth missing")
-	err := runWithResponses(t, []fakeResponse{{}, {}, {stdout: " M openspec/file.md\n"}, {}, {}, {}, {}, {err: errBoom}}, nil)
+	err := runWithResponses(t, []fakeResponse{
+		{},
+		{writeLastMessage: true, lastMessage: "Final response"},
+		{stdout: " M openspec/file.md\n"},
+		{},
+		{},
+		{},
+		{},
+		{err: errBoom},
+	}, nil)
 	if err == nil || !strings.Contains(err.Error(), "github pr create") {
 		t.Fatalf("Run() error = %v, want PR creation context", err)
 	}
 }
 
-func TestRunnerReturnsOpenQuestionsCommentFailure(t *testing.T) {
+func TestRunnerReturnsFinalResponseCommentFailure(t *testing.T) {
 	errBoom := errors.New("comment failed")
-	err := runWithResponsesWithQuestions(t, []fakeResponse{{}, {}, {stdout: " M openspec/file.md\n"}, {}, {}, {}, {}, {stdout: "https://github.com/example/project/pull/42\n"}, {err: errBoom}}, "## Open Questions\n\n- Question?\n")
-	if err == nil || !strings.Contains(err.Error(), "github pr comment") {
+	err := runWithTempDir(t, []fakeResponse{
+		{},
+		{writeLastMessage: true, lastMessage: "Final response"},
+		{stdout: " M openspec/file.md\n"},
+		{},
+		{},
+		{},
+		{},
+		{stdout: "https://github.com/example/project/pull/42\n"},
+		{err: errBoom},
+	}, io.Discard, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "github final response comment") {
 		t.Fatalf("Run() error = %v, want comment context", err)
 	}
 }
@@ -251,7 +276,17 @@ func TestRunnerCleanupTempWhenConfigured(t *testing.T) {
 	cfg := validConfig()
 	cfg.CleanupTemp = true
 	fake := &fakeCommandRunner{
-		responses: []fakeResponse{{}, {}, {stdout: " M openspec/file.md\n"}, {}, {}, {}, {}, {stdout: "https://github.com/example/project/pull/42\n"}},
+		responses: []fakeResponse{
+			{},
+			{writeLastMessage: true, lastMessage: "Final response"},
+			{stdout: " M openspec/file.md\n"},
+			{},
+			{},
+			{},
+			{},
+			{stdout: "https://github.com/example/project/pull/42\n"},
+			{},
+		},
 	}
 	var removedPath string
 	runner := &Runner{
@@ -289,8 +324,52 @@ func TestBuildHelpers(t *testing.T) {
 		t.Fatalf("BuildCodexPrompt() = %q", prompt)
 	}
 
-	if got, want := strings.Join(CodexArgs("/tmp/clone"), " "), "exec --json --sandbox danger-full-access --cd /tmp/clone -"; got != want {
+	if got, want := strings.Join(CodexArgs("/tmp/clone", "/tmp/last-message.txt"), " "), "exec --json --sandbox danger-full-access --output-last-message /tmp/last-message.txt --cd /tmp/clone -"; got != want {
 		t.Fatalf("CodexArgs() = %q, want %q", got, want)
+	}
+}
+
+func TestRunnerSkipsEmptyLastMessageComment(t *testing.T) {
+	var stdout bytes.Buffer
+	fake := &fakeCommandRunner{
+		responses: []fakeResponse{
+			{},
+			{writeLastMessage: true, lastMessage: " \n\t "},
+			{stdout: " M openspec/file.md\n"},
+			{},
+			{},
+			{},
+			{},
+			{stdout: "https://github.com/example/project/pull/42\n"},
+		},
+	}
+	err := runWithTempDir(t, fake.responses, &stdout, io.Discard)
+	if err != nil {
+		t.Fatalf("Run() returned error: %v", err)
+	}
+
+	events := decodeLogEvents(t, stdout.String())
+	assertLogMessage(t, events, "github", "skipped PR comment: final Codex response is empty")
+}
+
+func TestReadLastCodexMessage(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "last-message.txt")
+	writeFile(t, path, "\n final response \n")
+
+	got, err := ReadLastCodexMessage(path)
+	if err != nil {
+		t.Fatalf("ReadLastCodexMessage() returned error: %v", err)
+	}
+	if got != "final response" {
+		t.Fatalf("ReadLastCodexMessage() = %q, want %q", got, "final response")
+	}
+
+	missing, err := ReadLastCodexMessage(filepath.Join(t.TempDir(), "missing.txt"))
+	if err != nil {
+		t.Fatalf("ReadLastCodexMessage() missing file error = %v", err)
+	}
+	if missing != "" {
+		t.Fatalf("ReadLastCodexMessage() missing file = %q, want empty string", missing)
 	}
 }
 
@@ -328,52 +407,6 @@ https://github.com/example/project/pull/42`,
 				t.Fatalf("parsePRURL() = %q, want %q", got, tt.want)
 			}
 		})
-	}
-}
-
-func TestExtractOpenQuestions(t *testing.T) {
-	content := `
-# Proposal
-
-## Open Questions
-
-- Who owns review?
-1. Should rollout be staged?
-
-## Out of scope
-
-- This is not a question.
-
-## Открытые вопросы
-
-- Нужен ли отдельный rollout plan?
-- нет
-`
-
-	got := ExtractOpenQuestions(content)
-	want := []string{
-		"Who owns review?",
-		"Should rollout be staged?",
-		"Нужен ли отдельный rollout plan?",
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("ExtractOpenQuestions() = %#v, want %#v", got, want)
-	}
-}
-
-func TestCollectOpenQuestionsScansOpenSpecChanges(t *testing.T) {
-	root := t.TempDir()
-	writeOpenQuestionsFile(t, root, "## Open Questions\n\n- First?\n- First?\n")
-	writeFile(t, filepath.Join(root, "notes.md"), "## Open Questions\n\n- Should not be collected?\n")
-
-	got, err := CollectOpenQuestions(root)
-	if err != nil {
-		t.Fatalf("CollectOpenQuestions() returned error: %v", err)
-	}
-
-	want := []string{"First?"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("CollectOpenQuestions() = %#v, want %#v", got, want)
 	}
 }
 
@@ -415,18 +448,16 @@ func runWithResponsesAndWriters(t *testing.T, responses []fakeResponse, cfg *con
 	return err
 }
 
-func runWithResponsesWithQuestions(t *testing.T, responses []fakeResponse, questionsMarkdown string) error {
+func runWithTempDir(t *testing.T, responses []fakeResponse, stdout io.Writer, stderr io.Writer) error {
 	t.Helper()
 
 	tempDir := filepath.Join(t.TempDir(), "orchv3-run")
-	cloneDir := filepath.Join(tempDir, "repo")
 	runner := &Runner{
 		Config:  validConfig(),
 		Command: &fakeCommandRunner{responses: responses},
-		Stdout:  io.Discard,
-		Stderr:  io.Discard,
+		Stdout:  stdout,
+		Stderr:  stderr,
 		MkdirTemp: func(dir string, pattern string) (string, error) {
-			writeOpenQuestionsFile(t, cloneDir, questionsMarkdown)
 			return tempDir, nil
 		},
 		RemoveAll: func(path string) error {
@@ -469,9 +500,11 @@ type recordedCommand struct {
 }
 
 type fakeResponse struct {
-	stdout string
-	stderr string
-	err    error
+	stdout           string
+	stderr           string
+	err              error
+	writeLastMessage bool
+	lastMessage      string
 }
 
 func (runner *fakeCommandRunner) Run(ctx context.Context, command commandrunner.Command) error {
@@ -497,6 +530,18 @@ func (runner *fakeCommandRunner) Run(ctx context.Context, command commandrunner.
 	}
 
 	response := runner.responses[index]
+	if response.writeLastMessage {
+		lastMessagePath, ok := findArgValue(command.Args, "--output-last-message")
+		if !ok {
+			return errors.New("missing --output-last-message argument")
+		}
+		if err := os.MkdirAll(filepath.Dir(lastMessagePath), 0700); err != nil {
+			return err
+		}
+		if err := os.WriteFile(lastMessagePath, []byte(response.lastMessage), 0600); err != nil {
+			return err
+		}
+	}
 	if response.stdout != "" && command.Stdout != nil {
 		if _, err := io.WriteString(command.Stdout, response.stdout); err != nil {
 			return err
@@ -511,6 +556,16 @@ func (runner *fakeCommandRunner) Run(ctx context.Context, command commandrunner.
 	return response.err
 }
 
+func findArgValue(args []string, flag string) (string, bool) {
+	for index := 0; index < len(args)-1; index++ {
+		if args[index] == flag {
+			return args[index+1], true
+		}
+	}
+
+	return "", false
+}
+
 func assertCommand(t *testing.T, got recordedCommand, name string, args []string, dir string) {
 	t.Helper()
 
@@ -523,12 +578,6 @@ func assertCommand(t *testing.T, got recordedCommand, name string, args []string
 	if got.dir != dir {
 		t.Fatalf("command dir = %q, want %q", got.dir, dir)
 	}
-}
-
-func writeOpenQuestionsFile(t *testing.T, cloneDir string, content string) {
-	t.Helper()
-
-	writeFile(t, filepath.Join(cloneDir, "openspec", "changes", "change-a", "proposal.md"), content)
 }
 
 func writeFile(t *testing.T, path string, content string) {

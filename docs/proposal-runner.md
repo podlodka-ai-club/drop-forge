@@ -16,12 +16,12 @@ printf '%s\n' "Добавить сценарий ..." | orchv3
 
 При запуске workflow итоговый PR URL печатается в stdout. Логи шагов `temp`, `git`, `codex` и `github` печатаются в stderr, чтобы stdout можно было использовать в скриптах.
 
-Если в сгенерированных OpenSpec markdown-файлах внутри `openspec/changes` есть секция `Open Questions` или `Открытые вопросы`, runner добавит эти вопросы отдельным PR comment после создания pull request.
+После создания pull request runner пытается опубликовать отдельный PR comment из последнего непустого сообщения Codex, сохраненного через `codex exec --output-last-message`. Если финальное сообщение пустое или состоит только из whitespace, дополнительный комментарий не создается.
 
 ## Внешние prerequisites
 
 - `git` должен быть установлен и доступен по пути `PROPOSAL_GIT_PATH` или через `PATH`.
-- `codex` должен поддерживать non-interactive формат `codex exec --sandbox danger-full-access --cd <clone-dir> -`; prompt передается через stdin.
+- `codex` должен поддерживать non-interactive формат `codex exec --sandbox danger-full-access --output-last-message <path> --cd <clone-dir> -`; prompt передается через stdin.
 - `gh` должен быть установлен, доступен по пути `PROPOSAL_GH_PATH` или через `PATH`, и заранее аутентифицирован для целевого GitHub-репозитория.
 - `.env` загружается через `github.com/joho/godotenv`: поддерживаются кавычки, комментарии и multiline-значения из godotenv, при этом process environment имеет приоритет над `.env`.
 

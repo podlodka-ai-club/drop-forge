@@ -6,7 +6,7 @@
 ## 2. Proposal Runner Comment Flow
 
 - [ ] 2.1 Заменить публикацию комментария из `CollectOpenQuestions` на публикацию непустого последнего сообщения Codex.
-- [ ] 2.2 Удалить или вывести из основного workflow код, который сканирует `openspec/changes/**/*.md` ради секций `Open Questions`.
+- [ ] 2.2 Удалить код, который сканирует `openspec/changes/**/*.md` ради секций `Open Questions`.
 - [ ] 2.3 Обновить ошибки и step-логи proposal runner под новый сценарий создания комментария.
 
 ## 3. Documentation And Verification

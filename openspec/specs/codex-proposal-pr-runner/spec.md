@@ -120,25 +120,25 @@ The system SHALL create a pull request through the authenticated `gh` CLI in the
 - **WHEN** the PR creation command exits with an error
 - **THEN** the system logs the PR creation output and returns an error that identifies the PR step
 
-### Requirement: Open questions PR comment
-The system SHALL detect unresolved implementation questions in generated OpenSpec markdown artifacts and add them as a separate comment on the created pull request.
-
-#### Scenario: Open questions are present
-- **WHEN** the workflow creates a pull request and generated OpenSpec artifacts contain an `Open Questions` or `Открытые вопросы` section
-- **THEN** the system publishes those questions as a pull request comment and logs the comment creation step
-
-#### Scenario: No open questions are present
-- **WHEN** the workflow creates a pull request and generated OpenSpec artifacts do not contain open questions
-- **THEN** the system does not create an empty questions comment and still returns the pull request URL
-
-#### Scenario: Open questions comment fails
-- **WHEN** the pull request is created but publishing the open questions comment fails
-- **THEN** the system returns an error that identifies the comment step and logs the comment creation output
-
 ### Requirement: Testable command execution
 The proposal runner module SHALL allow tests to replace external command execution so unit tests do not require real GitHub access, Codex CLI, or network calls.
 
 #### Scenario: Command runner is substituted in tests
 - **WHEN** a unit test constructs the proposal runner with a fake command runner
 - **THEN** the test can assert the ordered git, Codex, and PR commands without executing external programs
+
+### Requirement: Codex final response PR comment
+The system SHALL publish the last non-empty Codex response as a separate comment on the created pull request.
+
+#### Scenario: Final Codex response is present
+- **WHEN** the workflow creates a pull request and `codex exec` produced a non-empty last message
+- **THEN** the system publishes that message as a pull request comment and logs the comment creation step
+
+#### Scenario: Final Codex response is empty
+- **WHEN** the workflow creates a pull request and the captured last Codex message is empty or whitespace-only
+- **THEN** the system does not create an empty pull request comment and still returns the pull request URL
+
+#### Scenario: Codex response comment fails
+- **WHEN** the pull request is created but publishing the last Codex message as a comment fails
+- **THEN** the system returns an error that identifies the comment step and logs the comment creation output
 

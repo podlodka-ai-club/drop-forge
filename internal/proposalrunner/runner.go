@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -23,6 +22,7 @@ import (
 const (
 	defaultTempPattern = "orchv3-proposal-*"
 	maxSlugLength      = 48
+	lastMessageFile    = "codex-last-message.txt"
 )
 
 type Runner struct {
@@ -101,14 +101,20 @@ func (runner *Runner) Run(ctx context.Context, taskDescription string) (prURL st
 	}
 
 	prompt := BuildCodexPrompt(taskDescription)
+	lastMessagePath := filepath.Join(tempDir, lastMessageFile)
 	logger.Infof("codex", "prompt:\n%s", prompt)
 	if err := runLoggedCommand(ctx, command, commandrunner.Command{
 		Name:  runner.Config.CodexPath,
-		Args:  CodexArgs(cloneDir),
+		Args:  CodexArgs(cloneDir, lastMessagePath),
 		Dir:   cloneDir,
 		Stdin: strings.NewReader(prompt),
 	}, "codex", stdout, stderr); err != nil {
 		return "", fmt.Errorf("codex proposal: %w", err)
+	}
+
+	lastMessage, err := ReadLastCodexMessage(lastMessagePath)
+	if err != nil {
+		return "", fmt.Errorf("read final codex message: %w", err)
 	}
 
 	status, err := runner.gitStatus(ctx, command, cloneDir, stdout, stderr)
@@ -160,7 +166,7 @@ func (runner *Runner) Run(ctx context.Context, taskDescription string) (prURL st
 	}
 	logger.Infof("github", "created PR %s", prURL)
 
-	if err := runner.commentOpenQuestions(ctx, command, cloneDir, prURL, stdout, stderr); err != nil {
+	if err := runner.commentLastCodexMessage(ctx, command, cloneDir, prURL, lastMessage, stdout, stderr); err != nil {
 		return "", err
 	}
 
@@ -175,8 +181,14 @@ Task description:
 `, strings.TrimSpace(taskDescription))
 }
 
-func CodexArgs(cloneDir string) []string {
-	return []string{"exec", "--json", "--sandbox", "danger-full-access", "--cd", cloneDir, "-"}
+func CodexArgs(cloneDir string, lastMessagePath string) []string {
+	args := []string{"exec", "--json", "--sandbox", "danger-full-access"}
+	if strings.TrimSpace(lastMessagePath) != "" {
+		args = append(args, "--output-last-message", lastMessagePath)
+	}
+	args = append(args, "--cd", cloneDir, "-")
+
+	return args
 }
 
 func BuildBranchName(prefix string, taskDescription string, now time.Time) string {
@@ -251,165 +263,44 @@ func (runner *Runner) createPullRequest(ctx context.Context, command commandrunn
 	return prURL, nil
 }
 
-func (runner *Runner) commentOpenQuestions(ctx context.Context, command commandrunner.Runner, cloneDir string, prURL string, stdout io.Writer, stderr io.Writer) error {
-	questions, err := CollectOpenQuestions(cloneDir)
+func ReadLastCodexMessage(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", nil
+	}
+
+	content, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Errorf("collect open questions: %w", err)
+		if errors.Is(err, os.ErrNotExist) {
+			return "", nil
+		}
+		return "", err
 	}
-	if len(questions) == 0 {
+
+	return strings.TrimSpace(string(content)), nil
+}
+
+func (runner *Runner) commentLastCodexMessage(ctx context.Context, command commandrunner.Runner, cloneDir string, prURL string, lastMessage string, stdout io.Writer, stderr io.Writer) error {
+	logger := steplog.New(stdout)
+	if strings.TrimSpace(lastMessage) == "" {
+		logger.Infof("github", "skipped PR comment: final Codex response is empty")
 		return nil
 	}
 
-	body := BuildOpenQuestionsComment(questions)
-	if !strings.Contains(body, "- ") {
-		return nil
-	}
-
-	args := []string{"pr", "comment", prURL, "--body", body}
-	steplog.New(stdout).Infof("github", "%s %s", runner.Config.GHPath, strings.Join(args, " "))
+	args := []string{"pr", "comment", prURL, "--body", lastMessage}
+	logger.Infof("github", "publishing final Codex response as PR comment")
+	logger.Infof("github", "%s %s", runner.Config.GHPath, strings.Join(args, " "))
 
 	if err := runLoggedCommand(ctx, command, commandrunner.Command{
 		Name: runner.Config.GHPath,
 		Args: args,
 		Dir:  cloneDir,
 	}, "github", stdout, stderr); err != nil {
-		return fmt.Errorf("github pr comment: %w", err)
+		return fmt.Errorf("github final response comment: %w", err)
 	}
 
+	logger.Infof("github", "created PR comment from final Codex response")
 	return nil
-}
-
-func CollectOpenQuestions(root string) ([]string, error) {
-	searchRoot := filepath.Join(root, "openspec", "changes")
-	if info, err := os.Stat(searchRoot); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, err
-	} else if !info.IsDir() {
-		return nil, nil
-	}
-
-	var questions []string
-	seen := make(map[string]struct{})
-	err := filepath.WalkDir(searchRoot, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.IsDir() || filepath.Ext(path) != ".md" {
-			return nil
-		}
-
-		content, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("read %s: %w", path, err)
-		}
-
-		for _, question := range ExtractOpenQuestions(string(content)) {
-			key := strings.ToLower(question)
-			if _, ok := seen[key]; ok {
-				continue
-			}
-			seen[key] = struct{}{}
-			questions = append(questions, question)
-		}
-
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	return questions, nil
-}
-
-func ExtractOpenQuestions(content string) []string {
-	lines := strings.Split(content, "\n")
-	var questions []string
-	inSection := false
-	sectionLevel := 0
-
-	for _, rawLine := range lines {
-		line := strings.TrimSpace(rawLine)
-		if level, title, ok := parseMarkdownHeading(line); ok {
-			inSection = isOpenQuestionsHeading(title)
-			sectionLevel = level
-			continue
-		}
-
-		if !inSection || line == "" {
-			continue
-		}
-
-		if level, _, ok := parseMarkdownHeading(line); ok && level <= sectionLevel {
-			inSection = false
-			continue
-		}
-
-		question := normalizeQuestionLine(line)
-		if question != "" {
-			questions = append(questions, question)
-		}
-	}
-
-	return questions
-}
-
-func BuildOpenQuestionsComment(questions []string) string {
-	var builder strings.Builder
-	builder.WriteString("Open implementation questions:\n")
-	for _, question := range questions {
-		question = strings.TrimSpace(question)
-		if question != "" {
-			builder.WriteString("- ")
-			builder.WriteString(question)
-			builder.WriteByte('\n')
-		}
-	}
-
-	return strings.TrimRight(builder.String(), "\n")
-}
-
-func parseMarkdownHeading(line string) (level int, title string, ok bool) {
-	if !strings.HasPrefix(line, "#") {
-		return 0, "", false
-	}
-
-	for level < len(line) && line[level] == '#' {
-		level++
-	}
-	if level == 0 || level > 6 || level >= len(line) || line[level] != ' ' {
-		return 0, "", false
-	}
-
-	return level, strings.TrimSpace(line[level:]), true
-}
-
-func isOpenQuestionsHeading(title string) bool {
-	title = strings.ToLower(strings.TrimSpace(title))
-	return strings.Contains(title, "open") && strings.Contains(title, "question") ||
-		strings.Contains(title, "открыт") && strings.Contains(title, "вопрос")
-}
-
-func normalizeQuestionLine(line string) string {
-	line = strings.TrimSpace(line)
-	line = strings.TrimPrefix(line, "- [ ] ")
-	line = strings.TrimPrefix(line, "- [x] ")
-	line = strings.TrimLeft(line, "-*+ \t")
-
-	numberedPrefix := regexp.MustCompile(`^\d+[\.)]\s+`)
-	line = numberedPrefix.ReplaceAllString(line, "")
-	line = strings.TrimSpace(line)
-	if line == "" {
-		return ""
-	}
-
-	switch strings.ToLower(line) {
-	case "none", "n/a", "нет", "нет вопросов", "не выявлены":
-		return ""
-	default:
-		return line
-	}
 }
 
 func parsePRURL(output string) (string, error) {

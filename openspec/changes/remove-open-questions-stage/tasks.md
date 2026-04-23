@@ -1,8 +1,7 @@
-## 1. Skill And Codex Output Capture
+## 1. Codex Output Capture
 
-- [ ] 1.1 Обновить `.codex/skills/openspec-propose/SKILL.md`, убрав требование отдельного блока `Open Questions` из финальной сводки proposal.
-- [ ] 1.2 Расширить сборку argv для `codex exec`, чтобы runner сохранял последнее сообщение агента через `--output-last-message` во временный файл.
-- [ ] 1.3 Добавить helper для чтения и нормализации сохраненного последнего сообщения Codex после завершения команды.
+- [ ] 1.1 Расширить сборку argv для `codex exec`, чтобы runner сохранял последнее сообщение агента через `--output-last-message` во временный файл.
+- [ ] 1.2 Добавить helper для чтения и нормализации сохраненного последнего сообщения Codex после завершения команды.
 
 ## 2. Proposal Runner Comment Flow
 

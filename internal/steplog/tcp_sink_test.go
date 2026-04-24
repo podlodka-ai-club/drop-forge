@@ -73,6 +73,44 @@ func TestTCPSink_DropsOnOverflow(t *testing.T) {
 	}
 }
 
+func TestTCPSink_ReconnectsAfterServerRestart(t *testing.T) {
+	listener1, addr := startTestListener(t)
+
+	// Short reconnect baseline for the test.
+	sink := newTCPSinkWithBackoff(addr, 16, 200*time.Millisecond, io.Discard, 50*time.Millisecond, 500*time.Millisecond)
+	t.Cleanup(func() { _ = sink.Close() })
+
+	_, _ = sink.Write([]byte("first\n"))
+	lines := readLines(t, listener1, 1, 2*time.Second)
+	if len(lines) != 1 || lines[0] != "first" {
+		t.Fatalf("first batch = %v", lines)
+	}
+
+	_ = listener1.Close()
+
+	// Bring up a new listener on the same port.
+	listener2, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatalf("re-listen on %s: %v", addr, err)
+	}
+	t.Cleanup(func() { _ = listener2.Close() })
+
+	// Write until reconnect succeeds; goroutine backoff retries dial.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		_, _ = sink.Write([]byte("second\n"))
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	lines = readLines(t, listener2, 1, 3*time.Second)
+	if len(lines) == 0 {
+		t.Fatalf("no lines received after reconnect")
+	}
+	if lines[0] != "second" {
+		t.Fatalf("post-reconnect line = %q, want %q", lines[0], "second")
+	}
+}
+
 func TestTCPSink_DeliversEvents(t *testing.T) {
 	listener, addr := startTestListener(t)
 

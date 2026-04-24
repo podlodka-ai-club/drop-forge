@@ -10,10 +10,17 @@ import (
 	"time"
 )
 
+const (
+	defaultBackoffMin = 1 * time.Second
+	defaultBackoffMax = 30 * time.Second
+)
+
 type TCPSink struct {
 	addr        string
 	dialTimeout time.Duration
 	warnOut     io.Writer
+	backoffMin  time.Duration
+	backoffMax  time.Duration
 
 	queue chan []byte
 
@@ -23,6 +30,10 @@ type TCPSink struct {
 }
 
 func NewTCPSink(addr string, bufferSize int, dialTimeout time.Duration, warnOut io.Writer) *TCPSink {
+	return newTCPSinkWithBackoff(addr, bufferSize, dialTimeout, warnOut, defaultBackoffMin, defaultBackoffMax)
+}
+
+func newTCPSinkWithBackoff(addr string, bufferSize int, dialTimeout time.Duration, warnOut io.Writer, backoffMin, backoffMax time.Duration) *TCPSink {
 	if bufferSize < 1 {
 		bufferSize = 1
 	}
@@ -34,6 +45,8 @@ func NewTCPSink(addr string, bufferSize int, dialTimeout time.Duration, warnOut 
 		addr:        addr,
 		dialTimeout: dialTimeout,
 		warnOut:     warnOut,
+		backoffMin:  backoffMin,
+		backoffMax:  backoffMax,
 		queue:       make(chan []byte, bufferSize),
 		done:        make(chan struct{}),
 	}
@@ -67,6 +80,10 @@ func (s *TCPSink) Dropped() uint64 {
 
 func (s *TCPSink) run() {
 	defer s.wg.Done()
+
+	backoff := s.backoffMin
+	firstFailureLogged := false
+
 	for {
 		select {
 		case <-s.done:
@@ -76,14 +93,24 @@ func (s *TCPSink) run() {
 
 		conn, err := net.DialTimeout("tcp", s.addr, s.dialTimeout)
 		if err != nil {
+			if !firstFailureLogged {
+				s.warnf("steplog: logstash sink unavailable at %s, will retry: %v", s.addr, err)
+				firstFailureLogged = true
+			}
 			select {
 			case <-s.done:
 				return
-			case <-time.After(500 * time.Millisecond):
-				continue
+			case <-time.After(backoff):
 			}
+			backoff *= 2
+			if backoff > s.backoffMax {
+				backoff = s.backoffMax
+			}
+			continue
 		}
 
+		backoff = s.backoffMin
+		firstFailureLogged = false
 		s.drain(conn)
 	}
 }

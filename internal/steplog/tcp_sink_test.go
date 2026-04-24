@@ -2,13 +2,34 @@ package steplog
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
+
+// safeBuffer is a bytes.Buffer guarded by a mutex so tests can read it
+// while a background goroutine writes to it.
+type safeBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *safeBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *safeBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
 
 func startTestListener(t *testing.T) (net.Listener, string) {
 	t.Helper()
@@ -134,6 +155,27 @@ func TestTCPSink_CloseFlushesPending(t *testing.T) {
 		if line != want {
 			t.Fatalf("line[%d] = %q, want %q", i, line, want)
 		}
+	}
+}
+
+func TestTCPSink_PeriodicDropWarning(t *testing.T) {
+	var warn safeBuffer
+	sink := newTCPSinkWithBackoffAndWarnInterval(
+		"127.0.0.1:1", 2, 50*time.Millisecond, &warn,
+		50*time.Millisecond, 200*time.Millisecond, 100*time.Millisecond,
+	)
+	t.Cleanup(func() { _ = sink.Close() })
+
+	for i := 0; i < 20; i++ {
+		_, _ = sink.Write([]byte("x\n"))
+	}
+
+	// Wait long enough for at least one tick of the warning interval (100ms).
+	time.Sleep(300 * time.Millisecond)
+
+	output := warn.String()
+	if !strings.Contains(output, "dropped") {
+		t.Fatalf("warn output missing drop summary: %q", output)
 	}
 }
 

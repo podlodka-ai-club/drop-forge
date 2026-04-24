@@ -11,18 +11,20 @@ import (
 )
 
 const (
-	defaultBackoffMin = 1 * time.Second
-	defaultBackoffMax = 30 * time.Second
+	defaultBackoffMin       = 1 * time.Second
+	defaultBackoffMax       = 30 * time.Second
+	defaultDropWarnInterval = 30 * time.Second
 
 	closeFlushTimeout = 2 * time.Second
 )
 
 type TCPSink struct {
-	addr        string
-	dialTimeout time.Duration
-	warnOut     io.Writer
-	backoffMin  time.Duration
-	backoffMax  time.Duration
+	addr         string
+	dialTimeout  time.Duration
+	warnOut      io.Writer
+	backoffMin   time.Duration
+	backoffMax   time.Duration
+	warnInterval time.Duration
 
 	queue chan []byte
 
@@ -32,10 +34,23 @@ type TCPSink struct {
 }
 
 func NewTCPSink(addr string, bufferSize int, dialTimeout time.Duration, warnOut io.Writer) *TCPSink {
-	return newTCPSinkWithBackoff(addr, bufferSize, dialTimeout, warnOut, defaultBackoffMin, defaultBackoffMax)
+	return newTCPSinkWithBackoffAndWarnInterval(
+		addr, bufferSize, dialTimeout, warnOut,
+		defaultBackoffMin, defaultBackoffMax, defaultDropWarnInterval,
+	)
 }
 
 func newTCPSinkWithBackoff(addr string, bufferSize int, dialTimeout time.Duration, warnOut io.Writer, backoffMin, backoffMax time.Duration) *TCPSink {
+	return newTCPSinkWithBackoffAndWarnInterval(
+		addr, bufferSize, dialTimeout, warnOut,
+		backoffMin, backoffMax, defaultDropWarnInterval,
+	)
+}
+
+func newTCPSinkWithBackoffAndWarnInterval(
+	addr string, bufferSize int, dialTimeout time.Duration, warnOut io.Writer,
+	backoffMin, backoffMax, warnInterval time.Duration,
+) *TCPSink {
 	if bufferSize < 1 {
 		bufferSize = 1
 	}
@@ -44,17 +59,19 @@ func newTCPSinkWithBackoff(addr string, bufferSize int, dialTimeout time.Duratio
 	}
 
 	sink := &TCPSink{
-		addr:        addr,
-		dialTimeout: dialTimeout,
-		warnOut:     warnOut,
-		backoffMin:  backoffMin,
-		backoffMax:  backoffMax,
-		queue:       make(chan []byte, bufferSize),
-		done:        make(chan struct{}),
+		addr:         addr,
+		dialTimeout:  dialTimeout,
+		warnOut:      warnOut,
+		backoffMin:   backoffMin,
+		backoffMax:   backoffMax,
+		warnInterval: warnInterval,
+		queue:        make(chan []byte, bufferSize),
+		done:         make(chan struct{}),
 	}
 
-	sink.wg.Add(1)
+	sink.wg.Add(2)
 	go sink.run()
+	go sink.warnLoop()
 
 	return sink
 }
@@ -171,4 +188,27 @@ func (s *TCPSink) flushRemaining(writer *bufio.Writer) {
 
 func (s *TCPSink) warnf(format string, args ...any) {
 	_, _ = fmt.Fprintln(s.warnOut, fmt.Sprintf(format, args...))
+}
+
+func (s *TCPSink) warnLoop() {
+	defer s.wg.Done()
+	if s.warnInterval <= 0 {
+		return
+	}
+	ticker := time.NewTicker(s.warnInterval)
+	defer ticker.Stop()
+
+	var lastReported uint64
+	for {
+		select {
+		case <-s.done:
+			return
+		case <-ticker.C:
+			current := s.dropped.Load()
+			if current > lastReported {
+				s.warnf("steplog: dropped %d events due to sink overflow", current-lastReported)
+				lastReported = current
+			}
+		}
+	}
 }

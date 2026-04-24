@@ -38,6 +38,41 @@ func readLines(t *testing.T, listener net.Listener, want int, timeout time.Durat
 	return lines
 }
 
+func TestTCPSink_NonBlockingWrite(t *testing.T) {
+	// No listener — DialTimeout fails, queue fills, further writes must not block.
+	sink := NewTCPSink("127.0.0.1:1", 8, 50*time.Millisecond, io.Discard)
+	t.Cleanup(func() { _ = sink.Close() })
+
+	start := time.Now()
+	for i := 0; i < 1000; i++ {
+		if _, err := sink.Write([]byte("payload\n")); err != nil {
+			t.Fatalf("Write[%d]: %v", i, err)
+		}
+	}
+	elapsed := time.Since(start)
+	if elapsed > 200*time.Millisecond {
+		t.Fatalf("1000 writes took %v, want < 200ms", elapsed)
+	}
+}
+
+func TestTCPSink_DropsOnOverflow(t *testing.T) {
+	// No listener, bufferSize=4, write 10 → 4 buffered, 6 dropped.
+	sink := NewTCPSink("127.0.0.1:1", 4, 50*time.Millisecond, io.Discard)
+	t.Cleanup(func() { _ = sink.Close() })
+
+	for i := 0; i < 10; i++ {
+		_, _ = sink.Write([]byte("x\n"))
+	}
+
+	// Give the goroutine a beat in case it raced a couple of items out of the queue.
+	time.Sleep(10 * time.Millisecond)
+
+	got := sink.Dropped()
+	if got < 6 {
+		t.Fatalf("Dropped() = %d, want >= 6", got)
+	}
+}
+
 func TestTCPSink_DeliversEvents(t *testing.T) {
 	listener, addr := startTestListener(t)
 

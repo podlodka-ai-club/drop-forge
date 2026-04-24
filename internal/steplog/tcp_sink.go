@@ -47,7 +47,11 @@ func NewTCPSink(addr string, bufferSize int, dialTimeout time.Duration, warnOut 
 func (s *TCPSink) Write(p []byte) (int, error) {
 	buf := make([]byte, len(p))
 	copy(buf, p)
-	s.queue <- buf
+	select {
+	case s.queue <- buf:
+	default:
+		s.dropped.Add(1)
+	}
 	return len(p), nil
 }
 

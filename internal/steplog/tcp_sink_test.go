@@ -2,6 +2,7 @@ package steplog
 
 import (
 	"bufio"
+	"fmt"
 	"io"
 	"net"
 	"strings"
@@ -108,6 +109,31 @@ func TestTCPSink_ReconnectsAfterServerRestart(t *testing.T) {
 	}
 	if lines[0] != "second" {
 		t.Fatalf("post-reconnect line = %q, want %q", lines[0], "second")
+	}
+}
+
+func TestTCPSink_CloseFlushesPending(t *testing.T) {
+	listener, addr := startTestListener(t)
+
+	sink := NewTCPSink(addr, 64, 200*time.Millisecond, io.Discard)
+
+	for i := 0; i < 20; i++ {
+		_, _ = sink.Write([]byte(fmt.Sprintf("evt-%02d\n", i)))
+	}
+
+	if err := sink.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	lines := readLines(t, listener, 20, 3*time.Second)
+	if len(lines) != 20 {
+		t.Fatalf("received %d lines, want 20: %v", len(lines), lines)
+	}
+	for i, line := range lines {
+		want := fmt.Sprintf("evt-%02d", i)
+		if line != want {
+			t.Fatalf("line[%d] = %q, want %q", i, line, want)
+		}
 	}
 }
 

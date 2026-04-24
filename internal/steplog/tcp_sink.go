@@ -13,6 +13,8 @@ import (
 const (
 	defaultBackoffMin = 1 * time.Second
 	defaultBackoffMax = 30 * time.Second
+
+	closeFlushTimeout = 2 * time.Second
 )
 
 type TCPSink struct {
@@ -87,6 +89,7 @@ func (s *TCPSink) run() {
 	for {
 		select {
 		case <-s.done:
+			s.finalFlush()
 			return
 		default:
 		}
@@ -99,6 +102,7 @@ func (s *TCPSink) run() {
 			}
 			select {
 			case <-s.done:
+				s.finalFlush()
 				return
 			case <-time.After(backoff):
 			}
@@ -115,12 +119,28 @@ func (s *TCPSink) run() {
 	}
 }
 
+// finalFlush is called when Close is observed without a live connection.
+// It tries one last dial and flushes pending events if any.
+func (s *TCPSink) finalFlush() {
+	if len(s.queue) == 0 {
+		return
+	}
+	conn, err := net.DialTimeout("tcp", s.addr, s.dialTimeout)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	writer := bufio.NewWriter(conn)
+	s.flushRemaining(writer)
+}
+
 func (s *TCPSink) drain(conn net.Conn) {
 	defer conn.Close()
 	writer := bufio.NewWriter(conn)
 	for {
 		select {
 		case <-s.done:
+			s.flushRemaining(writer)
 			return
 		case payload := <-s.queue:
 			if _, err := writer.Write(payload); err != nil {
@@ -131,6 +151,22 @@ func (s *TCPSink) drain(conn net.Conn) {
 			}
 		}
 	}
+}
+
+func (s *TCPSink) flushRemaining(writer *bufio.Writer) {
+	deadline := time.Now().Add(closeFlushTimeout)
+	for time.Now().Before(deadline) {
+		select {
+		case payload := <-s.queue:
+			if _, err := writer.Write(payload); err != nil {
+				return
+			}
+		default:
+			_ = writer.Flush()
+			return
+		}
+	}
+	_ = writer.Flush()
 }
 
 func (s *TCPSink) warnf(format string, args ...any) {

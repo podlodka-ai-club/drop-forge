@@ -18,12 +18,19 @@ func main() {
 }
 
 func run(args []string, stdin *os.File, stdout io.Writer, stderr io.Writer) int {
-	logger := steplog.New(stderr)
-
 	cfg, err := config.Load()
 	if err != nil {
-		logger.Errorf("cli", "load config: %v", err)
+		steplog.New(stderr).Errorf("cli", "load config: %v", err)
 		return 1
+	}
+
+	logger, closer, err := buildLogger(stderr, cfg, os.Stderr)
+	if err != nil {
+		steplog.New(stderr).Errorf("cli", "build logger: %v", err)
+		return 1
+	}
+	if closer != nil {
+		defer func() { _ = closer.Close() }()
 	}
 
 	taskDescription, err := readTaskDescription(args, stdin)

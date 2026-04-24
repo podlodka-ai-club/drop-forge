@@ -21,7 +21,7 @@ type testEvent struct {
 func TestBuildLogger_DisabledWhenAddrEmpty(t *testing.T) {
 	var stderr bytes.Buffer
 
-	logger, closer, err := buildLogger(&stderr, config.Config{
+	logger, out, closer, err := buildLogger(&stderr, config.Config{
 		AppName:  "orchv3",
 		Logstash: config.LogstashConfig{Addr: ""},
 	}, io.Discard)
@@ -30,6 +30,9 @@ func TestBuildLogger_DisabledWhenAddrEmpty(t *testing.T) {
 	}
 	if closer != nil {
 		t.Fatal("closer != nil when sink disabled")
+	}
+	if out == nil {
+		t.Fatal("out writer nil when sink disabled")
 	}
 	logger.Infof("cli", "hello")
 
@@ -50,7 +53,7 @@ func TestBuildLogger_FanoutsToSinkWhenEnabled(t *testing.T) {
 	t.Cleanup(func() { _ = listener.Close() })
 
 	var stderr bytes.Buffer
-	logger, closer, err := buildLogger(&stderr, config.Config{
+	logger, out, closer, err := buildLogger(&stderr, config.Config{
 		AppName: "orchv3",
 		Logstash: config.LogstashConfig{
 			Addr:        listener.Addr().String(),
@@ -63,6 +66,9 @@ func TestBuildLogger_FanoutsToSinkWhenEnabled(t *testing.T) {
 	}
 	if closer == nil {
 		t.Fatal("closer == nil when sink enabled")
+	}
+	if out == nil {
+		t.Fatal("out writer nil when sink enabled")
 	}
 	t.Cleanup(func() { _ = closer.Close() })
 

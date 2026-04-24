@@ -24,7 +24,7 @@ func run(args []string, stdin *os.File, stdout io.Writer, stderr io.Writer) int 
 		return 1
 	}
 
-	logger, closer, err := buildLogger(stderr, cfg, os.Stderr)
+	logger, logOut, closer, err := buildLogger(stderr, cfg, os.Stderr)
 	if err != nil {
 		steplog.New(stderr).Errorf("cli", "build logger: %v", err)
 		return 1
@@ -41,9 +41,10 @@ func run(args []string, stdin *os.File, stdout io.Writer, stderr io.Writer) int 
 
 	if taskDescription != "" {
 		runner := proposalrunner.New(cfg.ProposalRunner)
-		runner.Stdout = stderr
-		runner.Stderr = stderr
-		runner.Command = commandrunner.ExecRunner{LogWriter: stderr}
+		runner.Service = cfg.AppName
+		runner.Stdout = logOut
+		runner.Stderr = logOut
+		runner.Command = commandrunner.ExecRunner{LogWriter: logOut}
 
 		prURL, err := runner.Run(context.Background(), taskDescription)
 		if err != nil {

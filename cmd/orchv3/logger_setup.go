@@ -7,9 +7,9 @@ import (
 	"orchv3/internal/steplog"
 )
 
-func buildLogger(stderr io.Writer, cfg config.Config, warnOut io.Writer) (steplog.Logger, io.Closer, error) {
+func buildLogger(stderr io.Writer, cfg config.Config, warnOut io.Writer) (steplog.Logger, io.Writer, io.Closer, error) {
 	if cfg.Logstash.Addr == "" {
-		return steplog.NewWithService(stderr, cfg.AppName), nil, nil
+		return steplog.NewWithService(stderr, cfg.AppName), stderr, nil, nil
 	}
 
 	sink := steplog.NewTCPSink(
@@ -20,5 +20,5 @@ func buildLogger(stderr io.Writer, cfg config.Config, warnOut io.Writer) (steplo
 	)
 
 	out := io.MultiWriter(stderr, sink)
-	return steplog.NewWithService(out, cfg.AppName), sink, nil
+	return steplog.NewWithService(out, cfg.AppName), out, sink, nil
 }

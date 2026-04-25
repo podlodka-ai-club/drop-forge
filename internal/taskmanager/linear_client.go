@@ -18,7 +18,7 @@ const (
 	defaultPageSize    = 50
 	pullRequestTitle   = "Pull Request"
 	managedIssuesQuery = `
-query ManagedIssues($projectId: String!, $stateIds: [String!]!, $after: String, $first: Int!) {
+query ManagedIssues($projectId: ID!, $stateIds: [ID!]!, $after: String, $first: Int!) {
   issues(
     filter: {
       project: { id: { eq: $projectId } }
@@ -48,7 +48,7 @@ query ManagedIssues($projectId: String!, $stateIds: [String!]!, $after: String, 
 }
 `
 	issueCommentsQuery = `
-query IssueComments($issueId: String!, $after: String, $first: Int!) {
+	query IssueComments($issueId: String!, $after: String, $first: Int!) {
   issue(id: $issueId) {
     comments(after: $after, first: $first) {
       nodes {
@@ -71,14 +71,14 @@ query IssueComments($issueId: String!, $after: String, $first: Int!) {
 }
 `
 	moveTaskMutation = `
-mutation MoveTask($id: String!, $stateId: String!) {
+mutation MoveTask($id: ID!, $stateId: ID!) {
   issueUpdate(id: $id, input: { stateId: $stateId }) {
     success
   }
 }
 `
 	addCommentMutation = `
-mutation AddComment($issueId: String!, $body: String!) {
+mutation AddComment($issueId: ID!, $body: String!) {
   commentCreate(input: { issueId: $issueId, body: $body }) {
     success
     comment {
@@ -88,7 +88,7 @@ mutation AddComment($issueId: String!, $body: String!) {
 }
 `
 	addPRMutation = `
-mutation AddPR($issueId: String!, $url: String!, $title: String!) {
+mutation AddPR($issueId: ID!, $url: String!, $title: String!) {
   attachmentCreate(input: { issueId: $issueId, url: $url, title: $title }) {
     success
     attachment {

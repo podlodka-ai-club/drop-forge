@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Linear task selection is scoped to one configured project
-The system SHALL expose a task manager module that loads tasks from Linear only for the configured Linear project and only for the configured workflow states used by the orchestration routes `ready to propose`, `ready to code`, and `ready to archive`.
+The system SHALL expose a task manager module that loads tasks from Linear only for the configured Linear project and only for the configured workflow state IDs used by the orchestration routes `ready to propose`, `ready to code`, and `ready to archive`.
 
 #### Scenario: Tasks are loaded for managed states inside the configured project
 - **WHEN** an external orchestration layer requests managed tasks from the task manager
@@ -48,6 +48,18 @@ The system SHALL allow a caller to move a managed task to another configured Lin
 - **WHEN** a caller requests a state change for a managed task
 - **THEN** the task manager updates the task in Linear to the requested target state
 
+#### Scenario: Proposal task is moved to proposal review
+- **WHEN** an external orchestration layer completes proposal execution and requests a move to the configured `Need Proposal Review` state
+- **THEN** the task manager updates the task in Linear to that review state
+
+#### Scenario: Code task is moved to code review
+- **WHEN** an external orchestration layer completes code execution and requests a move to the configured `Need Code Review` state
+- **THEN** the task manager updates the task in Linear to that review state
+
+#### Scenario: Archive task is moved to archive review
+- **WHEN** an external orchestration layer completes archive execution and requests a move to the configured `Need Archive Review` state
+- **THEN** the task manager updates the task in Linear to that review state
+
 #### Scenario: State transition failure is returned with context
 - **WHEN** Linear rejects a requested state transition for a managed task
 - **THEN** the task manager returns an error that identifies the task and the state transition operation
@@ -79,14 +91,14 @@ The system SHALL allow a caller to associate a pull request URL with a managed L
 - **THEN** the task manager returns an error that identifies the task and the PR attachment operation
 
 ### Requirement: Runtime configuration for Linear task management
-The system SHALL read Linear task manager runtime parameters from `.env` and environment variables, including the target Linear project and managed workflow states, and the repository SHALL keep `.env.example` synchronized with those keys without committed values.
+The system SHALL read Linear task manager runtime parameters from `.env` and environment variables, including the target Linear project, managed workflow state IDs, and configured review target state IDs, and the repository SHALL keep `.env.example` synchronized with those keys without committed values.
 
 #### Scenario: Linear task manager configuration is present
-- **WHEN** the environment contains the required Linear connection, project filter, and state mapping settings
+- **WHEN** the environment contains the required Linear connection, project filter, managed state IDs, and review target state IDs
 - **THEN** the task manager uses those values to select tasks and apply workflow transitions
 
 #### Scenario: Required Linear task manager configuration is missing
-- **WHEN** a required Linear connection, project filter, or state mapping setting is absent
+- **WHEN** a required Linear connection, project filter, managed state ID, or review target state ID is absent
 - **THEN** the system returns a configuration error before starting task processing
 
 ### Requirement: Testable orchestration dependencies

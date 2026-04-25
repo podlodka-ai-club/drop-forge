@@ -121,6 +121,27 @@ func TestLineWriterWritesOneEventPerLine(t *testing.T) {
 	}
 }
 
+func TestNewWithServiceIncludesServiceField(t *testing.T) {
+	var out bytes.Buffer
+
+	NewWithService(&out, "orchv3-test").Infof("cli", "hello")
+
+	event := decodeEvents(t, out.String())[0]
+	if event.Service != "orchv3-test" {
+		t.Fatalf("service = %q, want %q", event.Service, "orchv3-test")
+	}
+}
+
+func TestNewOmitsServiceField(t *testing.T) {
+	var out bytes.Buffer
+
+	New(&out).Infof("cli", "hello")
+
+	if strings.Contains(out.String(), `"service"`) {
+		t.Fatalf("output contains service field: %s", out.String())
+	}
+}
+
 func decodeEvents(t *testing.T, output string) []Event {
 	t.Helper()
 

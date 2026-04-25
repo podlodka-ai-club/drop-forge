@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 var envKeys = []string{
@@ -31,6 +32,9 @@ var envKeys = []string{
 	"LINEAR_STATE_NEED_PROPOSAL_REVIEW_ID",
 	"LINEAR_STATE_NEED_CODE_REVIEW_ID",
 	"LINEAR_STATE_NEED_ARCHIVE_REVIEW_ID",
+	"LOGSTASH_ADDR",
+	"LOGSTASH_BUFFER_SIZE",
+	"LOGSTASH_DIAL_TIMEOUT",
 }
 
 func TestLoadUsesDefaults(t *testing.T) {
@@ -71,6 +75,67 @@ func TestLoadUsesDefaults(t *testing.T) {
 
 	if cfg.TaskManager.APIURL != defaultLinearAPIURL {
 		t.Fatalf("TaskManager.APIURL = %q, want %q", cfg.TaskManager.APIURL, defaultLinearAPIURL)
+	}
+	if cfg.Logstash.Addr != "" {
+		t.Fatalf("Logstash.Addr = %q, want empty by default", cfg.Logstash.Addr)
+	}
+	if cfg.Logstash.BufferSize != defaultLogstashBufferSize {
+		t.Fatalf("Logstash.BufferSize = %d, want %d", cfg.Logstash.BufferSize, defaultLogstashBufferSize)
+	}
+	if cfg.Logstash.DialTimeout != defaultLogstashDialTimeout {
+		t.Fatalf("Logstash.DialTimeout = %v, want %v", cfg.Logstash.DialTimeout, defaultLogstashDialTimeout)
+	}
+}
+
+func TestLoadReadsLogstashEnvironment(t *testing.T) {
+	isolateEnv(t)
+	t.Setenv("LOGSTASH_ADDR", "127.0.0.1:5000")
+	t.Setenv("LOGSTASH_BUFFER_SIZE", "2048")
+	t.Setenv("LOGSTASH_DIAL_TIMEOUT", "750ms")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned error: %v", err)
+	}
+
+	if cfg.Logstash.Addr != "127.0.0.1:5000" {
+		t.Fatalf("Addr = %q", cfg.Logstash.Addr)
+	}
+	if cfg.Logstash.BufferSize != 2048 {
+		t.Fatalf("BufferSize = %d", cfg.Logstash.BufferSize)
+	}
+	if cfg.Logstash.DialTimeout != 750*time.Millisecond {
+		t.Fatalf("DialTimeout = %v", cfg.Logstash.DialTimeout)
+	}
+}
+
+func TestLoadReturnsErrorForInvalidLogstashBufferSize(t *testing.T) {
+	isolateEnv(t)
+	t.Setenv("LOGSTASH_BUFFER_SIZE", "abc")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Load() error = nil, want non-nil")
+	}
+}
+
+func TestLoadReturnsErrorForNonPositiveLogstashBufferSize(t *testing.T) {
+	isolateEnv(t)
+	t.Setenv("LOGSTASH_BUFFER_SIZE", "0")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Load() error = nil, want non-nil")
+	}
+}
+
+func TestLoadReturnsErrorForInvalidLogstashDialTimeout(t *testing.T) {
+	isolateEnv(t)
+	t.Setenv("LOGSTASH_DIAL_TIMEOUT", "not-a-duration")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Load() error = nil, want non-nil")
 	}
 }
 

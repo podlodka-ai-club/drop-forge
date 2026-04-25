@@ -16,21 +16,27 @@ const (
 
 type Event struct {
 	Time    string `json:"time"`
+	Service string `json:"service,omitempty"`
 	Module  string `json:"module"`
 	Type    string `json:"type"`
 	Message string `json:"message"`
 }
 
 type Logger struct {
-	out io.Writer
+	out     io.Writer
+	service string
 }
 
 func New(out io.Writer) Logger {
+	return NewWithService(out, "")
+}
+
+func NewWithService(out io.Writer, service string) Logger {
 	if out == nil {
 		out = io.Discard
 	}
 
-	return Logger{out: out}
+	return Logger{out: out, service: service}
 }
 
 func (logger Logger) Infof(module string, format string, args ...any) {
@@ -52,6 +58,7 @@ func (logger Logger) LineWriter(module string) *LineWriter {
 func (logger Logger) write(module string, logType string, format string, args ...any) {
 	event := Event{
 		Time:    time.Now().UTC().Format(time.RFC3339Nano),
+		Service: logger.service,
 		Module:  normalizeModule(module),
 		Type:    logType,
 		Message: fmt.Sprintf(format, args...),

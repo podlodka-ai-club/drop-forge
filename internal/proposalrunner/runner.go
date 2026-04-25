@@ -28,12 +28,17 @@ const (
 type Runner struct {
 	Config  config.ProposalRunnerConfig
 	Command commandrunner.Runner
+	Service string
 	Stdout  io.Writer
 	Stderr  io.Writer
 
 	MkdirTemp func(dir string, pattern string) (string, error)
 	RemoveAll func(path string) error
 	Now       func() time.Time
+}
+
+func (runner *Runner) newLogger(w io.Writer) steplog.Logger {
+	return steplog.NewWithService(w, runner.Service)
 }
 
 func New(cfg config.ProposalRunnerConfig) *Runner {
@@ -60,7 +65,7 @@ func (runner *Runner) Run(ctx context.Context, taskDescription string) (prURL st
 	command := runner.commandRunner()
 	stdout := writerOrDiscard(runner.Stdout)
 	stderr := writerOrDiscard(runner.Stderr)
-	logger := steplog.New(stdout)
+	logger := runner.newLogger(stdout)
 	defer func() {
 		if err != nil {
 			logger.Errorf("proposalrunner", "workflow failed: %v", err)
@@ -92,7 +97,7 @@ func (runner *Runner) Run(ctx context.Context, taskDescription string) (prURL st
 
 	cloneDir := filepath.Join(tempDir, "repo")
 	logger.Infof("git", "cloning %s into %s", runner.Config.RepositoryURL, cloneDir)
-	if err := runLoggedCommand(ctx, command, commandrunner.Command{
+	if err := runner.runLoggedCommand(ctx, command, commandrunner.Command{
 		Name: runner.Config.GitPath,
 		Args: []string{"clone", runner.Config.RepositoryURL, cloneDir},
 		Dir:  tempDir,
@@ -103,7 +108,7 @@ func (runner *Runner) Run(ctx context.Context, taskDescription string) (prURL st
 	prompt := BuildCodexPrompt(taskDescription)
 	lastMessagePath := filepath.Join(tempDir, lastMessageFile)
 	logger.Infof("codex", "prompt:\n%s", prompt)
-	if err := runLoggedCommand(ctx, command, commandrunner.Command{
+	if err := runner.runLoggedCommand(ctx, command, commandrunner.Command{
 		Name:  runner.Config.CodexPath,
 		Args:  CodexArgs(cloneDir, lastMessagePath),
 		Dir:   cloneDir,
@@ -155,7 +160,7 @@ func (runner *Runner) Run(ctx context.Context, taskDescription string) (prURL st
 
 	for _, gitCommand := range gitCommands {
 		logger.Infof("git", "%s", strings.Join(append([]string{gitCommand.Name}, gitCommand.Args...), " "))
-		if err := runLoggedCommand(ctx, command, gitCommand, "git", stdout, stderr); err != nil {
+		if err := runner.runLoggedCommand(ctx, command, gitCommand, "git", stdout, stderr); err != nil {
 			return "", fmt.Errorf("git %s: %w", gitCommand.Args[0], err)
 		}
 	}
@@ -222,7 +227,7 @@ func BuildPRBody(taskDescription string) string {
 
 func (runner *Runner) gitStatus(ctx context.Context, command commandrunner.Runner, cloneDir string, stdout io.Writer, stderr io.Writer) (string, error) {
 	var status bytes.Buffer
-	err := runLoggedCommand(ctx, command, commandrunner.Command{
+	err := runner.runLoggedCommand(ctx, command, commandrunner.Command{
 		Name:   runner.Config.GitPath,
 		Args:   []string{"status", "--short"},
 		Dir:    cloneDir,
@@ -245,8 +250,8 @@ func (runner *Runner) createPullRequest(ctx context.Context, command commandrunn
 		"--body", body,
 	}
 
-	steplog.New(stdout).Infof("github", "%s %s", runner.Config.GHPath, strings.Join(args, " "))
-	if err := runLoggedCommand(ctx, command, commandrunner.Command{
+	runner.newLogger(stdout).Infof("github", "%s %s", runner.Config.GHPath, strings.Join(args, " "))
+	if err := runner.runLoggedCommand(ctx, command, commandrunner.Command{
 		Name:   runner.Config.GHPath,
 		Args:   args,
 		Dir:    cloneDir,
@@ -281,7 +286,7 @@ func ReadLastCodexMessage(path string) (string, error) {
 }
 
 func (runner *Runner) commentLastCodexMessage(ctx context.Context, command commandrunner.Runner, cloneDir string, prURL string, lastMessage string, stdout io.Writer, stderr io.Writer) error {
-	logger := steplog.New(stdout)
+	logger := runner.newLogger(stdout)
 	if strings.TrimSpace(lastMessage) == "" {
 		logger.Infof("github", "skipped PR comment: final Codex response is empty")
 		return nil
@@ -291,7 +296,7 @@ func (runner *Runner) commentLastCodexMessage(ctx context.Context, command comma
 	logger.Infof("github", "publishing final Codex response as PR comment")
 	logger.Infof("github", "%s %s", runner.Config.GHPath, strings.Join(args, " "))
 
-	if err := runLoggedCommand(ctx, command, commandrunner.Command{
+	if err := runner.runLoggedCommand(ctx, command, commandrunner.Command{
 		Name: runner.Config.GHPath,
 		Args: args,
 		Dir:  cloneDir,
@@ -338,9 +343,9 @@ func (runner *Runner) commandRunner() commandrunner.Runner {
 	return commandrunner.ExecRunner{LogWriter: writerOrDiscard(runner.Stdout)}
 }
 
-func runLoggedCommand(ctx context.Context, runner commandrunner.Runner, command commandrunner.Command, module string, stdout io.Writer, stderr io.Writer) error {
-	stdoutLog := steplog.New(stdout).LineWriter(module)
-	stderrLog := steplog.New(stderr).LineWriter(module)
+func (runner *Runner) runLoggedCommand(ctx context.Context, exec commandrunner.Runner, command commandrunner.Command, module string, stdout io.Writer, stderr io.Writer) error {
+	stdoutLog := runner.newLogger(stdout).LineWriter(module)
+	stderrLog := runner.newLogger(stderr).LineWriter(module)
 
 	stdoutWriters := []io.Writer{stdoutLog}
 	if command.Stdout != nil {
@@ -354,7 +359,7 @@ func runLoggedCommand(ctx context.Context, runner commandrunner.Runner, command 
 	}
 	command.Stderr = io.MultiWriter(stderrWriters...)
 
-	err := runner.Run(ctx, command)
+	err := exec.Run(ctx, command)
 	stdoutLog.Flush()
 	stderrLog.Flush()
 

@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/joho/godotenv"
 )
@@ -24,7 +25,9 @@ const (
 	defaultProposalCodexPath     = "codex"
 	defaultProposalGHPath        = "gh"
 
-	defaultLinearAPIURL = "https://api.linear.app/graphql"
+	defaultLinearAPIURL        = "https://api.linear.app/graphql"
+	defaultLogstashBufferSize  = 1024
+	defaultLogstashDialTimeout = 2 * time.Second
 )
 
 type Config struct {
@@ -35,6 +38,13 @@ type Config struct {
 	OpenAIAPIKey   string
 	ProposalRunner ProposalRunnerConfig
 	TaskManager    LinearTaskManagerConfig
+	Logstash       LogstashConfig
+}
+
+type LogstashConfig struct {
+	Addr        string
+	BufferSize  int
+	DialTimeout time.Duration
 }
 
 type ProposalRunnerConfig struct {
@@ -76,6 +86,11 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 
+	logstashCfg, err := loadLogstashConfig()
+	if err != nil {
+		return Config{}, err
+	}
+
 	return Config{
 		AppEnv:       trimmedStringFromEnv("APP_ENV", defaultAppEnv),
 		AppName:      trimmedStringFromEnv("APP_NAME", defaultAppName),
@@ -104,7 +119,43 @@ func Load() (Config, error) {
 			NeedCodeReviewStateID:     trimmedStringFromEnv("LINEAR_STATE_NEED_CODE_REVIEW_ID", ""),
 			NeedArchiveReviewStateID:  trimmedStringFromEnv("LINEAR_STATE_NEED_ARCHIVE_REVIEW_ID", ""),
 		},
+		Logstash: logstashCfg,
 	}, nil
+}
+
+func loadLogstashConfig() (LogstashConfig, error) {
+	bufferSize, err := intFromEnv("LOGSTASH_BUFFER_SIZE", defaultLogstashBufferSize)
+	if err != nil {
+		return LogstashConfig{}, err
+	}
+	if bufferSize < 1 {
+		return LogstashConfig{}, fmt.Errorf("LOGSTASH_BUFFER_SIZE must be >= 1, got %d", bufferSize)
+	}
+
+	dialTimeout, err := durationFromEnv("LOGSTASH_DIAL_TIMEOUT", defaultLogstashDialTimeout)
+	if err != nil {
+		return LogstashConfig{}, err
+	}
+
+	return LogstashConfig{
+		Addr:        trimmedStringFromEnv("LOGSTASH_ADDR", ""),
+		BufferSize:  bufferSize,
+		DialTimeout: dialTimeout,
+	}, nil
+}
+
+func durationFromEnv(key string, fallback time.Duration) (time.Duration, error) {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback, nil
+	}
+
+	parsed, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be a duration: %w", key, err)
+	}
+
+	return parsed, nil
 }
 
 func (cfg ProposalRunnerConfig) Validate() error {

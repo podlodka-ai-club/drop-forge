@@ -1,0 +1,2 @@
+{"attributes":{"title":"orchv3-*","timeFieldName":"@timestamp","name":"orchv3"},"id":"orchv3-data-view","managed":false,"references":[],"type":"index-pattern","version":"1"}
+{"excludedObjects":[],"excludedObjectsCount":0,"exportedCount":1,"missingRefCount":0,"missingReferences":[]}

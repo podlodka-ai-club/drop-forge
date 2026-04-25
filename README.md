@@ -1,6 +1,6 @@
 # orchv3
 
-`orchv3` — Go CLI для запуска proposal-runner workflow: утилита принимает описание задачи, создает OpenSpec proposal во внешнем репозитории через Codex CLI и возвращает URL созданного pull request.
+`orchv3` — Go CLI для запуска proposal-runner workflow: утилита принимает описание задачи, создает OpenSpec proposal во внешнем репозитории через внутренний `AgentExecutor` и возвращает URL созданного pull request. Текущая реализация `AgentExecutor` использует Codex CLI.
 
 README описывает только текущий подтвержденный сценарий. Детали workflow и prerequisites вынесены в [docs/proposal-runner.md](docs/proposal-runner.md).
 
@@ -8,7 +8,7 @@ README описывает только текущий подтвержденны
 
 - принять описание задачи аргументами командной строки;
 - принять описание задачи через `stdin`;
-- запустить proposal workflow во внешнем репозитории;
+- запустить proposal workflow во внешнем репозитории через `AgentExecutor`;
 - вывести итоговый PR URL в `stdout`;
 - писать пошаговые логи workflow в `stderr`.
 
@@ -31,7 +31,7 @@ README описывает только текущий подтвержденны
 
 - Go `1.24.2` или совместимая версия для сборки и запуска проекта;
 - `git`;
-- `codex`;
+- `codex` для текущей реализации agent executor;
 - `gh`;
 - доступ к целевому GitHub-репозиторию и предварительная аутентификация `gh`;
 - настроенный `.env` с runtime-параметрами.
@@ -50,7 +50,7 @@ Go-модуль и зависимости зафиксированы в [go.mod]
 
 - `PROPOSAL_REPOSITORY_URL` — обязательный URL целевого репозитория;
 - `PROPOSAL_BASE_BRANCH`, `PROPOSAL_REMOTE_NAME`, `PROPOSAL_BRANCH_PREFIX`, `PROPOSAL_PR_TITLE_PREFIX` — параметры git/GitHub workflow;
-- `PROPOSAL_GIT_PATH`, `PROPOSAL_CODEX_PATH`, `PROPOSAL_GH_PATH` — пути к внешним CLI;
+- `PROPOSAL_GIT_PATH`, `PROPOSAL_CODEX_PATH`, `PROPOSAL_GH_PATH` — пути к внешним CLI; `PROPOSAL_CODEX_PATH` относится к текущей Codex-реализации `AgentExecutor`;
 - `PROPOSAL_CLEANUP_TEMP` — удалять ли временную директорию после выполнения;
 - `LINEAR_API_URL`, `LINEAR_API_TOKEN`, `LINEAR_PROJECT_ID` — подключение к Linear и фильтр по проекту;
 - `LINEAR_STATE_READY_TO_PROPOSE_ID`, `LINEAR_STATE_READY_TO_CODE_ID`, `LINEAR_STATE_READY_TO_ARCHIVE_ID` — идентификаторы управляемых Linear state'ов для `TaskManager`;
@@ -82,7 +82,7 @@ printf '%s\n' "Добавить сценарий ..." | go run ./cmd/orchv3
 
 - [cmd/orchv3](cmd/orchv3) — точка входа CLI;
 - [internal/config](internal/config) — загрузка и валидация конфигурации;
-- [internal/proposalrunner](internal/proposalrunner) — orchestration proposal workflow;
+- [internal/proposalrunner](internal/proposalrunner) — orchestration proposal workflow и текущая Codex-реализация `AgentExecutor`;
 - [internal/taskmanager](internal/taskmanager) — Linear-facing слой для будущего `CoreOrch`;
 - [docs](docs) — дополнительная документация;
 - [openspec](openspec) — спецификации и changes.

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"orchv3/internal/proposalrunner"
 	"orchv3/internal/taskmanager"
 )
 
@@ -41,8 +42,14 @@ func TestRunProposalsOnceProcessesOnlyReadyTasksSequentially(t *testing.T) {
 	if len(runner.inputs) != 2 {
 		t.Fatalf("runner inputs len = %d, want 2", len(runner.inputs))
 	}
-	if !strings.Contains(runner.inputs[0], "Identifier: ENG-1") || !strings.Contains(runner.inputs[1], "Identifier: ENG-3") {
-		t.Fatalf("runner inputs = %#v", runner.inputs)
+	if runner.inputs[0].Identifier != "ENG-1" || runner.inputs[0].Title != "First" {
+		t.Fatalf("runner inputs[0] = %#v", runner.inputs[0])
+	}
+	if runner.inputs[1].Identifier != "ENG-3" || runner.inputs[1].Title != "Second" {
+		t.Fatalf("runner inputs[1] = %#v", runner.inputs[1])
+	}
+	if !strings.Contains(runner.inputs[0].AgentPrompt, "Identifier: ENG-1") || !strings.Contains(runner.inputs[1].AgentPrompt, "Identifier: ENG-3") {
+		t.Fatalf("runner agent prompts = %#v", runner.inputs)
 	}
 	if got := strings.Join(taskManager.addPRTaskIDs, ","); got != "issue-1,issue-3" {
 		t.Fatalf("AddPR task order = %q", got)
@@ -101,7 +108,7 @@ func TestBuildProposalInputIncludesTaskPayloadDeterministically(t *testing.T) {
 	}
 
 	got := BuildProposalInput(task)
-	want := `Linear task:
+	wantPrompt := `Linear task:
 ID: issue-1
 Identifier: ENG-1
 Title: Add proposal flow
@@ -112,8 +119,14 @@ Implement the proposal stage.
 Comments:
 1. Alex at 2026-04-25T06:30:00Z: Keep it minimal.
 2. Dana: Check CLI mode.`
-	if got != want {
-		t.Fatalf("BuildProposalInput() =\n%s\nwant:\n%s", got, want)
+	if got.AgentPrompt != wantPrompt {
+		t.Fatalf("BuildProposalInput().AgentPrompt =\n%s\nwant:\n%s", got.AgentPrompt, wantPrompt)
+	}
+	if got.Title != "Add proposal flow" {
+		t.Fatalf("BuildProposalInput().Title = %q, want %q", got.Title, "Add proposal flow")
+	}
+	if got.Identifier != "ENG-1" {
+		t.Fatalf("BuildProposalInput().Identifier = %q, want %q", got.Identifier, "ENG-1")
 	}
 }
 
@@ -121,12 +134,64 @@ func TestBuildProposalInputHandlesMissingDescriptionAndComments(t *testing.T) {
 	task := readyTask("issue-1", "ENG-1", "Add proposal flow")
 
 	got := BuildProposalInput(task)
-	if !strings.Contains(got, "No description provided.") {
-		t.Fatalf("input missing no-description marker:\n%s", got)
+	if !strings.Contains(got.AgentPrompt, "No description provided.") {
+		t.Fatalf("input missing no-description marker:\n%s", got.AgentPrompt)
 	}
-	if !strings.Contains(got, "No comments available.") {
-		t.Fatalf("input missing no-comments marker:\n%s", got)
+	if !strings.Contains(got.AgentPrompt, "No comments available.") {
+		t.Fatalf("input missing no-comments marker:\n%s", got.AgentPrompt)
 	}
+}
+
+func TestBuildProposalInputProducesPRTitleFromTaskTitle(t *testing.T) {
+	t.Run("identifier and title", func(t *testing.T) {
+		task := readyTask("issue-1", "ZIM-42", "Add export feature")
+		task.Description = "Implement the export pipeline."
+		task.Comments = []taskmanager.Comment{{Body: "Looks good."}}
+
+		input := BuildProposalInput(task)
+		displayName := proposalrunner.BuildDisplayName(input.Identifier, input.Title)
+		prTitle := proposalrunner.BuildPRTitle("OpenSpec proposal:", displayName)
+		branchName := proposalrunner.BuildBranchName("codex/proposal", displayName, time.Date(2026, 4, 26, 12, 0, 0, 0, time.UTC))
+
+		if !strings.Contains(prTitle, "ZIM-42: Add export feature") {
+			t.Fatalf("prTitle = %q, want to contain %q", prTitle, "ZIM-42: Add export feature")
+		}
+		if strings.Contains(prTitle, "Linear task:") {
+			t.Fatalf("prTitle = %q, must not contain leaked agent prompt header", prTitle)
+		}
+		if !strings.Contains(branchName, "zim-42-add-export-feature") {
+			t.Fatalf("branchName = %q, want slug from identifier+title", branchName)
+		}
+	})
+
+	t.Run("empty identifier falls back to title", func(t *testing.T) {
+		task := readyTask("issue-1", "", "Refactor payments module")
+
+		input := BuildProposalInput(task)
+		displayName := proposalrunner.BuildDisplayName(input.Identifier, input.Title)
+		prTitle := proposalrunner.BuildPRTitle("OpenSpec proposal:", displayName)
+
+		if prTitle != "OpenSpec proposal: Refactor payments module" {
+			t.Fatalf("prTitle = %q, want %q", prTitle, "OpenSpec proposal: Refactor payments module")
+		}
+		if strings.Contains(prTitle, ": :") || strings.HasSuffix(prTitle, ":") {
+			t.Fatalf("prTitle = %q, must not have empty identifier marker", prTitle)
+		}
+	})
+
+	t.Run("empty title uses fallback", func(t *testing.T) {
+		task := readyTask("issue-1", "ENG-9", "")
+
+		input := BuildProposalInput(task)
+		if input.Title == "" {
+			t.Fatal("BuildProposalInput().Title must not be empty after fallback")
+		}
+		displayName := proposalrunner.BuildDisplayName(input.Identifier, input.Title)
+		prTitle := proposalrunner.BuildPRTitle("OpenSpec proposal:", displayName)
+		if !strings.Contains(prTitle, input.Title) {
+			t.Fatalf("prTitle = %q, want to contain fallback title %q", prTitle, input.Title)
+		}
+	})
 }
 
 func TestRunProposalsOnceRunnerFailureDoesNotMutateTask(t *testing.T) {
@@ -217,13 +282,13 @@ func (manager *recordingTaskManager) MoveTask(ctx context.Context, taskID string
 }
 
 type recordingProposalRunner struct {
-	inputs []string
+	inputs []proposalrunner.ProposalInput
 	urls   []string
 	err    error
 }
 
-func (runner *recordingProposalRunner) Run(ctx context.Context, taskDescription string) (string, error) {
-	runner.inputs = append(runner.inputs, taskDescription)
+func (runner *recordingProposalRunner) Run(ctx context.Context, input proposalrunner.ProposalInput) (string, error) {
+	runner.inputs = append(runner.inputs, input)
 	if runner.err != nil {
 		return "", runner.err
 	}

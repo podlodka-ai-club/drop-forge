@@ -25,6 +25,18 @@ printf '%s\n' "Добавить сценарий ..." | orchv3
 - `gh` должен быть установлен, доступен по пути `PROPOSAL_GH_PATH` или через `PATH`, и заранее аутентифицирован для целевого GitHub-репозитория.
 - `.env` загружается через `github.com/joho/godotenv`: поддерживаются кавычки, комментарии и multiline-значения из godotenv, при этом process environment имеет приоритет над `.env`.
 
+## Контракт вызова
+
+Внутренний контракт `proposalrunner.Runner.Run(ctx, ProposalInput)` принимает структуру с явными полями:
+
+- `Title` — человекочитаемое название задачи. Используется для построения PR title, имени ветки и сообщения коммита. Обязательное; пустое значение приводит к ошибке до начала workflow.
+- `Identifier` — опциональный Linear-идентификатор задачи (например, `ZIM-42`). Если задан, PR title и slug ветки получают вид `<Identifier>: <Title>`.
+- `AgentPrompt` — полный prompt для agent executor (для orchestrate-режима — task identifier, title, description, comments). Обязательное.
+
+Правило формирования метаданных PR детерминированное: `displayName = "<Identifier>: <Title>"` (или `<Title>` при пустом `Identifier`), и затем PR title — `displayName` с префиксом `PROPOSAL_PR_TITLE_PREFIX`, усечённый до 72 рун. Содержимое `AgentPrompt` в title/branch/commit не попадает.
+
+В direct-режиме CLI (`orchv3 "..."`) аргументная строка трактуется одновременно как `Title` и `AgentPrompt`, `Identifier` остаётся пустым. В режиме `orchestrate-proposals` `coreorch.BuildProposalInput` заполняет все три поля из Linear-задачи.
+
 ## Runtime-настройки
 
 Доступные переменные перечислены в `.env.example` без значений. Для запуска proposal runner обязательно указать `PROPOSAL_REPOSITORY_URL`; остальные поля имеют безопасные значения по умолчанию в коде и могут быть переопределены через environment. `PROPOSAL_CODEX_PATH` остается путем к Codex CLI для текущей реализации agent executor.

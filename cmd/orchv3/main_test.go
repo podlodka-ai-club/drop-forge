@@ -11,6 +11,7 @@ import (
 
 	"orchv3/internal/config"
 	"orchv3/internal/coreorch"
+	"orchv3/internal/proposalrunner"
 	"orchv3/internal/steplog"
 	"orchv3/internal/taskmanager"
 )
@@ -176,8 +177,18 @@ func TestRunDirectProposalModeStillPrintsPRURL(t *testing.T) {
 	if stdout.String() != "https://github.com/example/repo/pull/42\n" {
 		t.Fatalf("stdout = %q", stdout.String())
 	}
-	if len(runner.inputs) != 1 || runner.inputs[0] != "Add proposal flow" {
-		t.Fatalf("runner inputs = %#v", runner.inputs)
+	if len(runner.inputs) != 1 {
+		t.Fatalf("runner inputs len = %d, want 1", len(runner.inputs))
+	}
+	got := runner.inputs[0]
+	if got.Title != "Add proposal flow" {
+		t.Fatalf("runner inputs[0].Title = %q, want %q", got.Title, "Add proposal flow")
+	}
+	if got.AgentPrompt != "Add proposal flow" {
+		t.Fatalf("runner inputs[0].AgentPrompt = %q, want %q", got.AgentPrompt, "Add proposal flow")
+	}
+	if got.Identifier != "" {
+		t.Fatalf("runner inputs[0].Identifier = %q, want empty", got.Identifier)
 	}
 }
 
@@ -225,13 +236,13 @@ type cliTestState struct {
 }
 
 type fakeSingleProposalRunner struct {
-	inputs []string
+	inputs []proposalrunner.ProposalInput
 	prURL  string
 	err    error
 }
 
-func (runner *fakeSingleProposalRunner) Run(ctx context.Context, taskDescription string) (string, error) {
-	runner.inputs = append(runner.inputs, taskDescription)
+func (runner *fakeSingleProposalRunner) Run(ctx context.Context, input proposalrunner.ProposalInput) (string, error) {
+	runner.inputs = append(runner.inputs, input)
 	return runner.prURL, runner.err
 }
 

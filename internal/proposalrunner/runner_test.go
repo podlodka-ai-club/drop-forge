@@ -57,7 +57,7 @@ func TestRunnerHappyPathCreatesPRAndCommentFromLastMessage(t *testing.T) {
 		Now: fixedTime,
 	}
 
-	prURL, err := runner.Run(context.Background(), task)
+	prURL, err := runner.Run(context.Background(), ProposalInput{Title: task, AgentPrompt: task})
 	if err != nil {
 		t.Fatalf("Run() returned error: %v", err)
 	}
@@ -111,12 +111,29 @@ func TestRunnerRejectsEmptyDescriptionBeforeSideEffects(t *testing.T) {
 		Now: fixedTime,
 	}
 
-	_, err := runner.Run(context.Background(), " \n\t ")
+	_, err := runner.Run(context.Background(), ProposalInput{Title: " \n\t ", AgentPrompt: "Some prompt"})
 	if err == nil {
 		t.Fatal("Run() error = nil, want non-nil")
 	}
+	if !strings.Contains(err.Error(), "title") {
+		t.Fatalf("Run() error = %q, want title context", err.Error())
+	}
 	if mkdirCalled {
-		t.Fatal("MkdirTemp called for empty task")
+		t.Fatal("MkdirTemp called for empty title")
+	}
+	if len(fake.commands) != 0 {
+		t.Fatalf("commands executed = %d, want 0", len(fake.commands))
+	}
+
+	_, err = runner.Run(context.Background(), ProposalInput{Title: "Task", AgentPrompt: " \n\t "})
+	if err == nil {
+		t.Fatal("Run() error = nil, want non-nil for empty agent prompt")
+	}
+	if !strings.Contains(err.Error(), "agent prompt") {
+		t.Fatalf("Run() error = %q, want agent prompt context", err.Error())
+	}
+	if mkdirCalled {
+		t.Fatal("MkdirTemp called for empty agent prompt")
 	}
 	if len(fake.commands) != 0 {
 		t.Fatalf("commands executed = %d, want 0", len(fake.commands))
@@ -138,7 +155,7 @@ func TestRunnerReturnsConfigValidationErrorBeforeSideEffects(t *testing.T) {
 		Now: fixedTime,
 	}
 
-	_, err := runner.Run(context.Background(), "Task")
+	_, err := runner.Run(context.Background(), ProposalInput{Title: "Task", AgentPrompt: "Task"})
 	if err == nil {
 		t.Fatal("Run() error = nil, want non-nil")
 	}
@@ -183,7 +200,7 @@ func TestRunnerLogsWorkflowFailureAsJSONError(t *testing.T) {
 		Now: fixedTime,
 	}
 
-	_, err := runner.Run(context.Background(), "Task")
+	_, err := runner.Run(context.Background(), ProposalInput{Title: "Task", AgentPrompt: "Task"})
 	if err == nil {
 		t.Fatal("Run() error = nil, want non-nil")
 	}
@@ -293,7 +310,7 @@ func TestRunnerCleanupTempWhenConfigured(t *testing.T) {
 		Now: fixedTime,
 	}
 
-	_, err := runner.Run(context.Background(), "Task")
+	_, err := runner.Run(context.Background(), ProposalInput{Title: "Task", AgentPrompt: "Task"})
 	if err != nil {
 		t.Fatalf("Run() returned error: %v", err)
 	}
@@ -316,6 +333,38 @@ func TestBuildHelpers(t *testing.T) {
 	if got, want := strings.Join(codexArgs("/tmp/clone", "/tmp/last-message.txt"), " "), "exec --json --sandbox danger-full-access --output-last-message /tmp/last-message.txt --cd /tmp/clone -"; got != want {
 		t.Fatalf("codexArgs() = %q, want %q", got, want)
 	}
+}
+
+func TestBuildDisplayNameCombinesIdentifierAndTitle(t *testing.T) {
+	if got := BuildDisplayName("ZIM-42", "Add export feature"); got != "ZIM-42: Add export feature" {
+		t.Fatalf("BuildDisplayName() = %q, want %q", got, "ZIM-42: Add export feature")
+	}
+	if got := BuildDisplayName(" \t ", "Refactor payments module"); got != "Refactor payments module" {
+		t.Fatalf("BuildDisplayName() empty identifier = %q, want title only", got)
+	}
+	if got := BuildDisplayName("ENG-7", "Multi\nline\r\ntitle"); got != "ENG-7: Multi line title" {
+		t.Fatalf("BuildDisplayName() with newlines = %q, want collapsed", got)
+	}
+}
+
+func TestBuildPRTitleTruncatesAndPrependsPrefix(t *testing.T) {
+	long := strings.Repeat("a", 100)
+	got := BuildPRTitle("OpenSpec proposal:", long)
+	if !strings.HasPrefix(got, "OpenSpec proposal: ") {
+		t.Fatalf("BuildPRTitle() = %q, want prefix", got)
+	}
+	titlePart := strings.TrimPrefix(got, "OpenSpec proposal: ")
+	if utf8RuneCount(titlePart) != 72 {
+		t.Fatalf("BuildPRTitle() title rune count = %d, want 72", utf8RuneCount(titlePart))
+	}
+
+	if got := BuildPRTitle("", "ZIM-1: Short"); got != "ZIM-1: Short" {
+		t.Fatalf("BuildPRTitle() no prefix = %q", got)
+	}
+}
+
+func utf8RuneCount(s string) int {
+	return len([]rune(s))
 }
 
 func TestRunnerSkipsEmptyLastMessageComment(t *testing.T) {
@@ -433,7 +482,7 @@ func runWithResponsesAndWriters(t *testing.T, responses []fakeResponse, cfg *con
 		Now: fixedTime,
 	}
 
-	_, err := runner.Run(context.Background(), "Task")
+	_, err := runner.Run(context.Background(), ProposalInput{Title: "Task", AgentPrompt: "Task"})
 	return err
 }
 
@@ -455,7 +504,7 @@ func runWithTempDir(t *testing.T, responses []fakeResponse, stdout io.Writer, st
 		Now: fixedTime,
 	}
 
-	_, err := runner.Run(context.Background(), "Task")
+	_, err := runner.Run(context.Background(), ProposalInput{Title: "Task", AgentPrompt: "Task"})
 	return err
 }
 

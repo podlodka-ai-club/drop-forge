@@ -45,7 +45,7 @@ func TestRunnerInvokesInjectedAgentExecutor(t *testing.T) {
 		Now: fixedTime,
 	}
 
-	prURL, err := runner.Run(context.Background(), task)
+	prURL, err := runner.Run(context.Background(), ProposalInput{Title: task, AgentPrompt: task})
 	if err != nil {
 		t.Fatalf("Run() returned error: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestRunnerReturnsAgentExecutorFailure(t *testing.T) {
 		Now: fixedTime,
 	}
 
-	_, err := runner.Run(context.Background(), "Task")
+	_, err := runner.Run(context.Background(), ProposalInput{Title: "Task", AgentPrompt: "Task"})
 	if err == nil || !strings.Contains(err.Error(), "agent proposal") {
 		t.Fatalf("Run() error = %v, want agent proposal context", err)
 	}

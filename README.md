@@ -4,32 +4,35 @@
 
 # Purrch
 
-`Purrch` — публичное имя проекта для оркестратора coding-agent workflow. Текущее техническое имя CLI и Go-модуля остается `orchv3`: утилита принимает описание задачи, создает OpenSpec proposal во внешнем репозитории через внутренний `AgentExecutor` и возвращает URL созданного pull request. Текущая реализация `AgentExecutor` использует Codex CLI.
+`Purrch` — публичное имя проекта для proposal-stage оркестрации coding-agent workflow. Текущее техническое имя CLI и Go-модуля остается `orchv3`: утилита умеет запускать proposal-runner напрямую по описанию задачи через внутренний `AgentExecutor` или выполнить один orchestration pass: найти в Linear задачи, готовые к proposal, создать OpenSpec proposal PR через Codex CLI, прикрепить PR к задаче и перевести задачу на review.
 
-README описывает только текущий подтвержденный сценарий. Детали workflow и prerequisites вынесены в [docs/proposal-runner.md](docs/proposal-runner.md).
+Детали single-run proposal workflow и prerequisites вынесены в [docs/proposal-runner.md](docs/proposal-runner.md). Детали Linear-facing слоя описаны в [docs/linear-task-manager.md](docs/linear-task-manager.md).
 
 Граница между публичным именем `Purrch` и техническим именем `orchv3` зафиксирована в [docs/branding.md](docs/branding.md).
 
 ## Что умеет CLI сейчас
 
-- принять описание задачи аргументами командной строки;
-- принять описание задачи через `stdin`;
+- запустить direct proposal-runner по описанию задачи из аргументов командной строки;
+- запустить direct proposal-runner по описанию задачи из `stdin`;
 - запустить proposal workflow во внешнем репозитории через `AgentExecutor`;
-- вывести итоговый PR URL в `stdout`;
-- писать пошаговые логи workflow в `stderr`.
+- вывести итоговый PR URL direct proposal-runner в `stdout`;
+- выполнить один pass proposal orchestration через `orchestrate-proposals`;
+- для Linear-задач в `Ready to Propose` создать proposal PR, прикрепить PR URL и перевести задачу в `Need Proposal Review`;
+- писать структурные JSON Lines логи workflow в `stderr` или настроенный sink.
 
 Если запустить CLI без аргументов и без данных в `stdin`, proposal workflow не стартует.
 
-## Что уже есть для Linear TaskManager
+## Proposal Orchestration
 
-В репозитории появился внутренний пакет `TaskManager` для будущего `CoreOrch`, но он пока не подключен к публичному CLI workflow. Его роль строго ограничена интеграцией с Linear:
+Режим `orchestrate-proposals` связывает `CoreOrch`, `TaskManager` и `proposalrunner`:
 
-- читать задачи только из одного настроенного Linear project;
-- фильтровать задачи по управляемым state'ам `ready to propose`, `ready to code`, `ready to archive`;
-- возвращать payload задачи для `CoreOrch`, включая описание, текущий state и комментарии;
-- записывать изменения обратно в Linear: move task, add comment, add PR.
+- `TaskManager` читает managed Linear tasks из одного настроенного project;
+- `CoreOrch` выбирает только задачи со state ID из `LINEAR_STATE_READY_TO_PROPOSE_ID`;
+- `CoreOrch` формирует input из `identifier`, `title`, `description` и `comments`;
+- `proposalrunner` создает OpenSpec proposal PR во внешнем репозитории;
+- после успеха `CoreOrch` вызывает `TaskManager.AddPR(...)`, затем `TaskManager.MoveTask(...)` в `LINEAR_STATE_NEED_PROPOSAL_REVIEW_ID`.
 
-Для HITL-сценария `TaskManager` возвращает все comments задачи без дополнительной фильтрации, чтобы `CoreOrch` мог использовать human feedback при повторном proposal/coding проходе.
+Если runner падает или Linear не смог прикрепить PR, задача не переводится в review state. Если PR уже прикреплен, но move task упал, команда завершится ошибкой с контекстом задачи и PR URL.
 
 ## Зависимости
 
@@ -40,6 +43,7 @@ README описывает только текущий подтвержденны
 - `codex` для текущей реализации agent executor;
 - `gh`;
 - доступ к целевому GitHub-репозиторию и предварительная аутентификация `gh`;
+- Linear API token и настроенные workflow state IDs для режима `orchestrate-proposals`;
 - настроенный `.env` с runtime-параметрами.
 
 Go-модуль и зависимости зафиксированы в [go.mod](go.mod). Подробные требования к proposal-runner workflow описаны в [docs/proposal-runner.md](docs/proposal-runner.md).
@@ -67,6 +71,10 @@ Go-модуль и зависимости зафиксированы в [go.mod]
 
 Перед первым запуском установите зависимости и подготовьте `.env`.
 
+### Direct proposal-runner
+
+Этот режим принимает готовое описание задачи и печатает URL созданного PR в `stdout`.
+
 Запуск с описанием задачи в аргументах:
 
 ```bash
@@ -84,12 +92,28 @@ printf '%s\n' "Добавить сценарий ..." | go run ./cmd/orchv3
 - `stdout` содержит только URL созданного pull request, чтобы результат было удобно использовать в скриптах;
 - `stderr` содержит пошаговые логи workflow (`temp`, `git`, `codex`, `github`) и сообщения CLI.
 
+### Proposal orchestration pass
+
+Этот режим сам берет задачи из Linear. `stdout` остается пустым; результат и ошибки видны в structured logs.
+
+```bash
+go run ./cmd/orchv3 orchestrate-proposals
+```
+
+Минимальная ручная проверка:
+
+1. В Linear подготовьте задачу в state, чей ID указан в `LINEAR_STATE_READY_TO_PROPOSE_ID`.
+2. Убедитесь, что `.env` заполнен для `PROPOSAL_*`, `LINEAR_*`, `git`, `codex` и `gh`.
+3. Запустите `go run ./cmd/orchv3 orchestrate-proposals`.
+4. Проверьте, что в Linear к задаче прикрепился PR URL, а state сменился на `LINEAR_STATE_NEED_PROPOSAL_REVIEW_ID`.
+
 ## Ключевые директории
 
 - [cmd/orchv3](cmd/orchv3) — точка входа CLI;
 - [internal/config](internal/config) — загрузка и валидация конфигурации;
+- [internal/coreorch](internal/coreorch) — proposal-stage orchestration layer;
 - [internal/proposalrunner](internal/proposalrunner) — orchestration proposal workflow и текущая Codex-реализация `AgentExecutor`;
-- [internal/taskmanager](internal/taskmanager) — Linear-facing слой для будущего `CoreOrch`;
+- [internal/taskmanager](internal/taskmanager) — Linear-facing слой для чтения и обновления задач;
 - [docs](docs) — дополнительная документация;
 - [openspec](openspec) — спецификации и changes.
 

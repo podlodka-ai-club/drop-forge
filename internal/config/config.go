@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -228,12 +229,41 @@ func (cfg LinearTaskManagerConfig) ManagedStateIDs() []string {
 }
 
 func loadDotEnv() error {
-	err := godotenv.Load()
-	if err == nil || errors.Is(err, os.ErrNotExist) {
+	path, err := findDotEnv()
+	if err != nil {
+		return err
+	}
+	if path == "" {
 		return nil
 	}
 
-	return fmt.Errorf("load .env: %w", err)
+	if err := godotenv.Load(path); err != nil {
+		return fmt.Errorf("load .env: %w", err)
+	}
+
+	return nil
+}
+
+func findDotEnv() (string, error) {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("get working directory: %w", err)
+	}
+
+	for {
+		path := filepath.Join(dir, ".env")
+		if _, err := os.Stat(path); err == nil {
+			return path, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("stat .env: %w", err)
+		}
+
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", nil
+		}
+		dir = parent
+	}
 }
 
 func stringFromEnv(key string, fallback string) string {

@@ -1,63 +1,4 @@
-# codex-proposal-pr-runner Specification
-
-## Purpose
-Описывает запуск Codex для подготовки OpenSpec proposal в отдельном clone workspace и публикацию результата в pull request.
-## Requirements
-### Requirement: Task description input
-The system SHALL expose a proposal runner module that accepts a task description string as the primary input and rejects empty or whitespace-only descriptions.
-
-#### Scenario: Valid task description is accepted
-- **WHEN** the caller starts the proposal runner with a non-empty task description
-- **THEN** the system starts the proposal PR workflow for that description
-
-#### Scenario: Empty task description is rejected
-- **WHEN** the caller starts the proposal runner with an empty or whitespace-only task description
-- **THEN** the system returns an error before creating a temp directory or running external commands
-
-### Requirement: Runtime configuration from environment files
-The system SHALL read runtime configuration from `.env` with `github.com/joho/godotenv` and environment variables, including the target GitHub repository, branch settings, and external command paths.
-
-#### Scenario: Repository is configured in env
-- **WHEN** `.env` or the process environment contains the target repository setting
-- **THEN** the system uses that repository for `git clone`
-
-#### Scenario: Required repository setting is missing
-- **WHEN** the target repository setting is absent
-- **THEN** the system returns a configuration error before running the proposal workflow
-
-#### Scenario: Environment overrides dot env
-- **WHEN** the same configuration key exists in `.env` and in the process environment
-- **THEN** the system uses the process environment value
-
-#### Scenario: Dot env syntax is parsed by godotenv
-- **WHEN** `.env` contains values that rely on supported godotenv syntax such as quoted strings or inline comments
-- **THEN** the system loads those values using godotenv-compatible parsing
-
-### Requirement: Environment variable template
-The repository SHALL keep `.env.example` synchronized with all supported configuration keys without secrets or default values.
-
-#### Scenario: Template lists runtime keys
-- **WHEN** a developer needs to configure the proposal runner locally
-- **THEN** `.env.example` lists the required keys without committed values
-
-### Requirement: Temporary clone workspace
-The system SHALL create a unique temporary directory for each run, clone the configured GitHub repository into that directory using `git clone`, and preserve the temporary directory by default for diagnostics.
-
-#### Scenario: Repository clone succeeds
-- **WHEN** the configured repository is reachable
-- **THEN** the system creates a temporary directory, logs its path, clones the repository into it, and continues the workflow in the clone root
-
-#### Scenario: Default temp directory retention
-- **WHEN** the workflow finishes without an explicit cleanup setting
-- **THEN** the system leaves the temporary directory on disk and logs its path for diagnostics
-
-#### Scenario: Explicit temp cleanup
-- **WHEN** the workflow finishes with cleanup enabled by configuration
-- **THEN** the system removes the temporary directory and logs the cleanup result
-
-#### Scenario: Repository clone fails
-- **WHEN** `git clone` exits with an error
-- **THEN** the system logs the clone output and returns an error that identifies the clone step
+## MODIFIED Requirements
 
 ### Requirement: Codex CLI openspec propose execution
 The system SHALL execute the OpenSpec proposal generation step through an internal `AgentExecutor` contract. The default implementation SHALL remain Codex CLI and SHALL preserve the current local non-interactive command format `codex exec --json --sandbox danger-full-access --output-last-message <path> --cd <clone-dir> -`, with the prompt passed through stdin and containing the `openspec-propose` skill instruction plus the original task description.
@@ -149,4 +90,3 @@ The system SHALL publish the last non-empty agent response as a separate comment
 #### Scenario: Agent response comment fails
 - **WHEN** the pull request is created but publishing the last agent message as a comment fails
 - **THEN** the system returns an error that identifies the comment step and logs the comment creation output
-

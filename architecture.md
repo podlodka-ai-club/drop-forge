@@ -36,7 +36,7 @@
 
 - При создании, выделении или существенном изменении сервисов агент обязан обновлять эту секцию, чтобы статус реализации и маппинг на код оставались актуальными.
 - `Logger` уже реализован в `internal/steplog`. Это текущий готовый сервис с явным контрактом JSON Lines.
-- `AgentExecutor` частично реализован в `internal/proposalrunner`: именно этот модуль сейчас запускает `codex`, собирает последний ответ и управляет шагами workflow.
+- `AgentExecutor` реализован как явный контракт внутри `internal/proposalrunner`. Текущая реализация `CodexCLIExecutor` изолирует протокол `codex exec`, prompt и сбор final message, а `Runner` использует этот контракт как шаг proposal workflow.
 - `GitManager` пока не выделен в отдельный пакет, но его ответственность уже фактически присутствует внутри `internal/proposalrunner` через команды `git clone`, `checkout -b`, `add`, `commit`, `push` и `gh pr create`.
 - `CoreOrch` для proposal-stage реализован в `internal/coreorch`: он получает managed tasks через контракт `TaskManager`, фильтрует задачи по `ReadyToProposeStateID`, последовательно запускает `ProposalRunner`, прикрепляет PR URL и переводит задачу в `NeedProposalReviewStateID`.
 - `cmd/orchv3/main.go` поддерживает два proposal-сценария: прямой single-run запуск `proposalrunner.Run` по task description из args/stdin и явный режим `orchestrate-proposals` для одного прохода `CoreOrch`.
@@ -46,5 +46,6 @@
 ## Текущее Архитектурное Чтение Репозитория
 
 - Сегодня проект покрывает вертикальный slice `CoreOrch -> TaskManager -> AgentExecutor -> GitManager -> Logger` для одного proposal orchestration pass без постоянного polling loop.
-- Следующий естественный шаг роста — отделить из `internal/proposalrunner` самостоятельные `GitManager` и `AgentExecutor`, а затем добавить долгоживущий scheduler/polling loop поверх `CoreOrch`.
+- `AgentExecutor` уже выделен как внутренняя граница, но находится в пакете `internal/proposalrunner`.
+- Следующий естественный шаг роста — отделить из `internal/proposalrunner` самостоятельный `GitManager`, а затем добавить долгоживущий scheduler/polling loop поверх `CoreOrch`.
 - До появления реальной потребности не выделять новые сервисы сверх этих пяти ролей.

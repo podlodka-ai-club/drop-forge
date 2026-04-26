@@ -1,8 +1,14 @@
-# orchv3
+<p align="center">
+  <img src="docs/assets/logo.svg" alt="Purrch logo" width="520">
+</p>
 
-`orchv3` — Go CLI для запуска proposal-runner workflow: утилита принимает описание задачи, создает OpenSpec proposal во внешнем репозитории через внутренний `AgentExecutor` и возвращает URL созданного pull request. Текущая реализация `AgentExecutor` использует Codex CLI.
+# Purrch
+
+`Purrch` — публичное имя проекта для оркестратора coding-agent workflow. Текущее техническое имя CLI и Go-модуля остается `orchv3`: утилита принимает описание задачи, создает OpenSpec proposal во внешнем репозитории через внутренний `AgentExecutor` и возвращает URL созданного pull request. Текущая реализация `AgentExecutor` использует Codex CLI.
 
 README описывает только текущий подтвержденный сценарий. Детали workflow и prerequisites вынесены в [docs/proposal-runner.md](docs/proposal-runner.md).
+
+Граница между публичным именем `Purrch` и техническим именем `orchv3` зафиксирована в [docs/branding.md](docs/branding.md).
 
 ## Что умеет CLI сейчас
 
@@ -100,5 +106,6 @@ go test ./...
 
 - [docs/proposal-runner.md](docs/proposal-runner.md) — подробное описание proposal-runner workflow и prerequisites;
 - [docs/linear-task-manager.md](docs/linear-task-manager.md) — описание текущего scope `TaskManager` и его места в целевой архитектуре;
+- [docs/branding.md](docs/branding.md) — правила использования имени `Purrch`, логотипа и технического имени `orchv3`;
 - [.env.example](.env.example) — шаблон поддерживаемых переменных окружения;
 - [openspec](openspec) — текущие и архивные изменения по OpenSpec.

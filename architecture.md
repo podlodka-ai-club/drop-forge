@@ -38,12 +38,13 @@
 - `Logger` уже реализован в `internal/steplog`. Это текущий готовый сервис с явным контрактом JSON Lines.
 - `AgentExecutor` частично реализован в `internal/proposalrunner`: именно этот модуль сейчас запускает `codex`, собирает последний ответ и управляет шагами workflow.
 - `GitManager` пока не выделен в отдельный пакет, но его ответственность уже фактически присутствует внутри `internal/proposalrunner` через команды `git clone`, `checkout -b`, `add`, `commit`, `push` и `gh pr create`.
-- `CoreOrch` пока существует в упрощенном виде как CLI entrypoint `cmd/orchv3/main.go`, который принимает вход, загружает конфиг и инициирует единичный orchestration run через `proposalrunner.Run`.
-- `TaskManager` пока не реализован как сервис в репозитории. Сейчас его роль находится вне системы и выполняется вручную или через внешний tracker.
+- `CoreOrch` для proposal-stage реализован в `internal/coreorch`: он получает managed tasks через контракт `TaskManager`, фильтрует задачи по `ReadyToProposeStateID`, последовательно запускает `ProposalRunner`, прикрепляет PR URL и переводит задачу в `NeedProposalReviewStateID`.
+- `cmd/orchv3/main.go` поддерживает два proposal-сценария: прямой single-run запуск `proposalrunner.Run` по task description из args/stdin и явный режим `orchestrate-proposals` для одного прохода `CoreOrch`.
+- `TaskManager` реализован в `internal/taskmanager`: сервис читает managed Linear tasks, возвращает внутреннюю модель задачи с идентификаторами, описанием, состоянием и комментариями, а также выполняет `AddPR` и `MoveTask`.
 - `internal/commandrunner` — это не отдельный доменный актор, а технический адаптер для запуска внешних команд, который уже переиспользуется `AgentExecutor`/будущим `GitManager`.
 
 ## Текущее Архитектурное Чтение Репозитория
 
-- Сегодня проект уже покрывает вертикальный slice `CoreOrch -> AgentExecutor -> GitManager -> Logger` для одного proposal-run без постоянного polling loop.
-- Следующий естественный шаг роста — отделить из `internal/proposalrunner` самостоятельные `GitManager` и `AgentExecutor`, а затем добавить `TaskManager` и долгоживущий `CoreOrch`.
+- Сегодня проект покрывает вертикальный slice `CoreOrch -> TaskManager -> AgentExecutor -> GitManager -> Logger` для одного proposal orchestration pass без постоянного polling loop.
+- Следующий естественный шаг роста — отделить из `internal/proposalrunner` самостоятельные `GitManager` и `AgentExecutor`, а затем добавить долгоживущий scheduler/polling loop поверх `CoreOrch`.
 - До появления реальной потребности не выделять новые сервисы сверх этих пяти ролей.

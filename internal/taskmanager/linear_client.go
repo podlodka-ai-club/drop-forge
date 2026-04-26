@@ -71,14 +71,14 @@ query ManagedIssues($projectId: ID!, $stateIds: [ID!]!, $after: String, $first: 
 }
 `
 	moveTaskMutation = `
-mutation MoveTask($id: ID!, $stateId: ID!) {
+mutation MoveTask($id: String!, $stateId: String) {
   issueUpdate(id: $id, input: { stateId: $stateId }) {
     success
   }
 }
 `
 	addCommentMutation = `
-mutation AddComment($issueId: ID!, $body: String!) {
+mutation AddComment($issueId: String!, $body: String!) {
   commentCreate(input: { issueId: $issueId, body: $body }) {
     success
     comment {
@@ -88,7 +88,7 @@ mutation AddComment($issueId: ID!, $body: String!) {
 }
 `
 	addPRMutation = `
-mutation AddPR($issueId: ID!, $url: String!, $title: String!) {
+mutation AddPR($issueId: String!, $url: String!, $title: String!) {
   attachmentCreate(input: { issueId: $issueId, url: $url, title: $title }) {
     success
     attachment {

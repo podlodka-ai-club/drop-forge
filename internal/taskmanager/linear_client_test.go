@@ -52,6 +52,15 @@ func TestLinearClientGetTasksFiltersProjectAndStateAndLoadsComments(t *testing.T
 	if tasks[0].ID != "issue-1" || tasks[1].ID != "issue-4" {
 		t.Fatalf("task ids = %#v", []string{tasks[0].ID, tasks[1].ID})
 	}
+	if tasks[0].Identifier != "ENG-1" {
+		t.Fatalf("first task identifier = %q, want ENG-1", tasks[0].Identifier)
+	}
+	if tasks[0].Title != "Proposal task" {
+		t.Fatalf("first task title = %q, want Proposal task", tasks[0].Title)
+	}
+	if tasks[0].State.ID != "state-1" || tasks[0].State.Name != "Ready to Propose" {
+		t.Fatalf("first task state = %#v", tasks[0].State)
+	}
 	if tasks[0].Comments[0].Body != "Need revision" {
 		t.Fatalf("first task comments = %#v", tasks[0].Comments)
 	}
@@ -141,6 +150,7 @@ func TestLinearClientWriteOperationsSendExpectedRequests(t *testing.T) {
 		call         func(context.Context, *LinearClient) error
 		responseBody string
 		wantQuery    string
+		wantQueryVar string
 		wantVars     map[string]any
 	}{
 		{
@@ -150,6 +160,7 @@ func TestLinearClientWriteOperationsSendExpectedRequests(t *testing.T) {
 			},
 			responseBody: `{"data":{"issueUpdate":{"success":true}}}`,
 			wantQuery:    "issueUpdate",
+			wantQueryVar: "$id: String!",
 			wantVars: map[string]any{
 				"id":      "issue-1",
 				"stateId": "state-2",
@@ -162,6 +173,7 @@ func TestLinearClientWriteOperationsSendExpectedRequests(t *testing.T) {
 			},
 			responseBody: `{"data":{"commentCreate":{"success":true,"comment":{"id":"comment-1"}}}}`,
 			wantQuery:    "commentCreate",
+			wantQueryVar: "$issueId: String!",
 			wantVars: map[string]any{
 				"issueId": "issue-1",
 				"body":    "hello",
@@ -174,6 +186,7 @@ func TestLinearClientWriteOperationsSendExpectedRequests(t *testing.T) {
 			},
 			responseBody: `{"data":{"attachmentCreate":{"success":true,"attachment":{"id":"attachment-1"}}}}`,
 			wantQuery:    "attachmentCreate",
+			wantQueryVar: "$issueId: String!",
 			wantVars: map[string]any{
 				"issueId": "issue-1",
 				"url":     "https://github.com/example/project/pull/42",
@@ -202,6 +215,9 @@ func TestLinearClientWriteOperationsSendExpectedRequests(t *testing.T) {
 			req := httpClient.requests[0]
 			if !strings.Contains(req.Query, tt.wantQuery) {
 				t.Fatalf("query = %q, want substring %q", req.Query, tt.wantQuery)
+			}
+			if !strings.Contains(req.Query, tt.wantQueryVar) {
+				t.Fatalf("query = %q, want variable declaration %q", req.Query, tt.wantQueryVar)
 			}
 			for key, want := range tt.wantVars {
 				if got := req.Variables[key]; got != want {

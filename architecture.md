@@ -36,7 +36,7 @@
 
 - При создании, выделении или существенном изменении сервисов агент обязан обновлять эту секцию, чтобы статус реализации и маппинг на код оставались актуальными.
 - `Logger` уже реализован в `internal/steplog`. Это текущий готовый сервис с явным контрактом JSON Lines.
-- `AgentExecutor` частично реализован в `internal/proposalrunner`: именно этот модуль сейчас запускает `codex`, собирает последний ответ и управляет шагами workflow.
+- `AgentExecutor` реализован как явный контракт внутри `internal/proposalrunner`. Текущая реализация `CodexCLIExecutor` изолирует протокол `codex exec`, prompt и сбор final message, а `Runner` использует этот контракт как шаг proposal workflow.
 - `GitManager` пока не выделен в отдельный пакет, но его ответственность уже фактически присутствует внутри `internal/proposalrunner` через команды `git clone`, `checkout -b`, `add`, `commit`, `push` и `gh pr create`.
 - `CoreOrch` пока существует в упрощенном виде как CLI entrypoint `cmd/orchv3/main.go`, который принимает вход, загружает конфиг и инициирует единичный orchestration run через `proposalrunner.Run`.
 - `TaskManager` пока не реализован как сервис в репозитории. Сейчас его роль находится вне системы и выполняется вручную или через внешний tracker.
@@ -44,6 +44,6 @@
 
 ## Текущее Архитектурное Чтение Репозитория
 
-- Сегодня проект уже покрывает вертикальный slice `CoreOrch -> AgentExecutor -> GitManager -> Logger` для одного proposal-run без постоянного polling loop.
-- Следующий естественный шаг роста — отделить из `internal/proposalrunner` самостоятельные `GitManager` и `AgentExecutor`, а затем добавить `TaskManager` и долгоживущий `CoreOrch`.
+- Сегодня проект уже покрывает вертикальный slice `CoreOrch -> AgentExecutor -> GitManager -> Logger` для одного proposal-run без постоянного polling loop. `AgentExecutor` уже выделен как внутренняя граница, но находится в пакете `internal/proposalrunner`.
+- Следующий естественный шаг роста — отделить из `internal/proposalrunner` самостоятельный `GitManager`, а затем добавить `TaskManager` и долгоживущий `CoreOrch`.
 - До появления реальной потребности не выделять новые сервисы сверх этих пяти ролей.

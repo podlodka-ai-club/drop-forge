@@ -22,12 +22,12 @@ import (
 const (
 	defaultTempPattern = "orchv3-proposal-*"
 	maxSlugLength      = 48
-	lastMessageFile    = "codex-last-message.txt"
 )
 
 type Runner struct {
 	Config  config.ProposalRunnerConfig
 	Command commandrunner.Runner
+	Agent   AgentExecutor
 	Service string
 	Stdout  io.Writer
 	Stderr  io.Writer
@@ -105,21 +105,15 @@ func (runner *Runner) Run(ctx context.Context, taskDescription string) (prURL st
 		return "", fmt.Errorf("git clone: %w", err)
 	}
 
-	prompt := BuildCodexPrompt(taskDescription)
-	lastMessagePath := filepath.Join(tempDir, lastMessageFile)
-	logger.Infof("codex", "prompt:\n%s", prompt)
-	if err := runner.runLoggedCommand(ctx, command, commandrunner.Command{
-		Name:  runner.Config.CodexPath,
-		Args:  CodexArgs(cloneDir, lastMessagePath),
-		Dir:   cloneDir,
-		Stdin: strings.NewReader(prompt),
-	}, "codex", stdout, stderr); err != nil {
-		return "", fmt.Errorf("codex proposal: %w", err)
-	}
-
-	lastMessage, err := ReadLastCodexMessage(lastMessagePath)
+	agentResult, err := runner.agentExecutor(command).Run(ctx, AgentExecutionInput{
+		TaskDescription: taskDescription,
+		CloneDir:        cloneDir,
+		TempDir:         tempDir,
+		Stdout:          stdout,
+		Stderr:          stderr,
+	})
 	if err != nil {
-		return "", fmt.Errorf("read final codex message: %w", err)
+		return "", fmt.Errorf("agent proposal: %w", err)
 	}
 
 	status, err := runner.gitStatus(ctx, command, cloneDir, stdout, stderr)
@@ -127,7 +121,7 @@ func (runner *Runner) Run(ctx context.Context, taskDescription string) (prURL st
 		return "", err
 	}
 	if strings.TrimSpace(status) == "" {
-		return "", errors.New("git status: no changes produced by codex")
+		return "", errors.New("git status: no changes produced by agent")
 	}
 	logger.Infof("git", "status:\n%s", strings.TrimRight(status, "\n"))
 
@@ -171,29 +165,11 @@ func (runner *Runner) Run(ctx context.Context, taskDescription string) (prURL st
 	}
 	logger.Infof("github", "created PR %s", prURL)
 
-	if err := runner.commentLastCodexMessage(ctx, command, cloneDir, prURL, lastMessage, stdout, stderr); err != nil {
+	if err := runner.commentLastAgentMessage(ctx, command, cloneDir, prURL, agentResult.FinalMessage, stdout, stderr); err != nil {
 		return "", err
 	}
 
 	return prURL, nil
-}
-
-func BuildCodexPrompt(taskDescription string) string {
-	return fmt.Sprintf(`Use the openspec-propose skill to create a complete OpenSpec proposal for the task below.
-
-Task description:
-%s
-`, strings.TrimSpace(taskDescription))
-}
-
-func CodexArgs(cloneDir string, lastMessagePath string) []string {
-	args := []string{"exec", "--json", "--sandbox", "danger-full-access"}
-	if strings.TrimSpace(lastMessagePath) != "" {
-		args = append(args, "--output-last-message", lastMessagePath)
-	}
-	args = append(args, "--cd", cloneDir, "-")
-
-	return args
 }
 
 func BuildBranchName(prefix string, taskDescription string, now time.Time) string {
@@ -268,32 +244,15 @@ func (runner *Runner) createPullRequest(ctx context.Context, command commandrunn
 	return prURL, nil
 }
 
-func ReadLastCodexMessage(path string) (string, error) {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return "", nil
-	}
-
-	content, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return "", nil
-		}
-		return "", err
-	}
-
-	return strings.TrimSpace(string(content)), nil
-}
-
-func (runner *Runner) commentLastCodexMessage(ctx context.Context, command commandrunner.Runner, cloneDir string, prURL string, lastMessage string, stdout io.Writer, stderr io.Writer) error {
+func (runner *Runner) commentLastAgentMessage(ctx context.Context, command commandrunner.Runner, cloneDir string, prURL string, lastMessage string, stdout io.Writer, stderr io.Writer) error {
 	logger := runner.newLogger(stdout)
 	if strings.TrimSpace(lastMessage) == "" {
-		logger.Infof("github", "skipped PR comment: final Codex response is empty")
+		logger.Infof("github", "skipped PR comment: final agent response is empty")
 		return nil
 	}
 
 	args := []string{"pr", "comment", prURL, "--body", lastMessage}
-	logger.Infof("github", "publishing final Codex response as PR comment")
+	logger.Infof("github", "publishing final agent response as PR comment")
 	logger.Infof("github", "%s %s", runner.Config.GHPath, strings.Join(args, " "))
 
 	if err := runner.runLoggedCommand(ctx, command, commandrunner.Command{
@@ -301,10 +260,10 @@ func (runner *Runner) commentLastCodexMessage(ctx context.Context, command comma
 		Args: args,
 		Dir:  cloneDir,
 	}, "github", stdout, stderr); err != nil {
-		return fmt.Errorf("github final response comment: %w", err)
+		return fmt.Errorf("github final agent response comment: %w", err)
 	}
 
-	logger.Infof("github", "created PR comment from final Codex response")
+	logger.Infof("github", "created PR comment from final agent response")
 	return nil
 }
 
@@ -343,9 +302,25 @@ func (runner *Runner) commandRunner() commandrunner.Runner {
 	return commandrunner.ExecRunner{LogWriter: writerOrDiscard(runner.Stdout)}
 }
 
+func (runner *Runner) agentExecutor(command commandrunner.Runner) AgentExecutor {
+	if runner.Agent != nil {
+		return runner.Agent
+	}
+
+	return CodexCLIExecutor{
+		Config:  runner.Config,
+		Command: command,
+		Service: runner.Service,
+	}
+}
+
 func (runner *Runner) runLoggedCommand(ctx context.Context, exec commandrunner.Runner, command commandrunner.Command, module string, stdout io.Writer, stderr io.Writer) error {
-	stdoutLog := runner.newLogger(stdout).LineWriter(module)
-	stderrLog := runner.newLogger(stderr).LineWriter(module)
+	return runLoggedCommand(ctx, runner.Service, exec, command, module, stdout, stderr)
+}
+
+func runLoggedCommand(ctx context.Context, service string, exec commandrunner.Runner, command commandrunner.Command, module string, stdout io.Writer, stderr io.Writer) error {
+	stdoutLog := steplog.NewWithService(writerOrDiscard(stdout), service).LineWriter(module)
+	stderrLog := steplog.NewWithService(writerOrDiscard(stderr), service).LineWriter(module)
 
 	stdoutWriters := []io.Writer{stdoutLog}
 	if command.Stdout != nil {

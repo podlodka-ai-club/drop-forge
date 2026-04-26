@@ -318,6 +318,37 @@ LINEAR_STATE_NEED_ARCHIVE_REVIEW_ID="state-archive-review"
 
 }
 
+func TestLoadReadsDotEnvFromParentDirectory(t *testing.T) {
+	isolateEnv(t)
+	writeDotEnv(t, `
+APP_NAME=orch-parent-env
+LINEAR_PROJECT_ID=project-from-parent-dotenv
+LINEAR_STATE_READY_TO_CODE_ID=state-code-from-parent
+`)
+
+	if err := os.MkdirAll(filepath.Join("internal", "taskmanager"), 0755); err != nil {
+		t.Fatalf("create nested package dir: %v", err)
+	}
+	if err := os.Chdir(filepath.Join("internal", "taskmanager")); err != nil {
+		t.Fatalf("chdir nested package dir: %v", err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned error: %v", err)
+	}
+
+	if cfg.AppName != "orch-parent-env" {
+		t.Fatalf("AppName = %q, want parent .env value", cfg.AppName)
+	}
+	if cfg.TaskManager.ProjectID != "project-from-parent-dotenv" {
+		t.Fatalf("ProjectID = %q, want parent .env value", cfg.TaskManager.ProjectID)
+	}
+	if cfg.TaskManager.ReadyToCodeStateID != "state-code-from-parent" {
+		t.Fatalf("ReadyToCodeStateID = %q, want parent .env value", cfg.TaskManager.ReadyToCodeStateID)
+	}
+}
+
 func TestLoadProcessEnvironmentOverridesDotEnv(t *testing.T) {
 	isolateEnv(t)
 	writeDotEnv(t, `

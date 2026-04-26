@@ -25,6 +25,7 @@ const (
 	defaultProposalCodexPath     = "codex"
 	defaultProposalGHPath        = "gh"
 
+	defaultLinearAPIURL        = "https://api.linear.app/graphql"
 	defaultLogstashBufferSize  = 1024
 	defaultLogstashDialTimeout = 2 * time.Second
 )
@@ -36,6 +37,7 @@ type Config struct {
 	HTTPPort       int
 	OpenAIAPIKey   string
 	ProposalRunner ProposalRunnerConfig
+	TaskManager    LinearTaskManagerConfig
 	Logstash       LogstashConfig
 }
 
@@ -55,6 +57,18 @@ type ProposalRunnerConfig struct {
 	GitPath       string
 	CodexPath     string
 	GHPath        string
+}
+
+type LinearTaskManagerConfig struct {
+	APIURL                    string
+	APIToken                  string
+	ProjectID                 string
+	ReadyToProposeStateID     string
+	ReadyToCodeStateID        string
+	ReadyToArchiveStateID     string
+	NeedProposalReviewStateID string
+	NeedCodeReviewStateID     string
+	NeedArchiveReviewStateID  string
 }
 
 func Load() (Config, error) {
@@ -93,6 +107,17 @@ func Load() (Config, error) {
 			GitPath:       trimmedStringFromEnv("PROPOSAL_GIT_PATH", defaultProposalGitPath),
 			CodexPath:     trimmedStringFromEnv("PROPOSAL_CODEX_PATH", defaultProposalCodexPath),
 			GHPath:        trimmedStringFromEnv("PROPOSAL_GH_PATH", defaultProposalGHPath),
+		},
+		TaskManager: LinearTaskManagerConfig{
+			APIURL:                    trimmedStringFromEnv("LINEAR_API_URL", defaultLinearAPIURL),
+			APIToken:                  trimmedStringFromEnv("LINEAR_API_TOKEN", ""),
+			ProjectID:                 trimmedStringFromEnv("LINEAR_PROJECT_ID", ""),
+			ReadyToProposeStateID:     trimmedStringFromEnv("LINEAR_STATE_READY_TO_PROPOSE_ID", ""),
+			ReadyToCodeStateID:        trimmedStringFromEnv("LINEAR_STATE_READY_TO_CODE_ID", ""),
+			ReadyToArchiveStateID:     trimmedStringFromEnv("LINEAR_STATE_READY_TO_ARCHIVE_ID", ""),
+			NeedProposalReviewStateID: trimmedStringFromEnv("LINEAR_STATE_NEED_PROPOSAL_REVIEW_ID", ""),
+			NeedCodeReviewStateID:     trimmedStringFromEnv("LINEAR_STATE_NEED_CODE_REVIEW_ID", ""),
+			NeedArchiveReviewStateID:  trimmedStringFromEnv("LINEAR_STATE_NEED_ARCHIVE_REVIEW_ID", ""),
 		},
 		Logstash: logstashCfg,
 	}, nil
@@ -155,6 +180,51 @@ func (cfg ProposalRunnerConfig) Validate() error {
 	}
 
 	return nil
+}
+
+func (cfg LinearTaskManagerConfig) Validate() error {
+	requiredValues := map[string]string{
+		"LINEAR_API_URL":                       cfg.APIURL,
+		"LINEAR_API_TOKEN":                     cfg.APIToken,
+		"LINEAR_PROJECT_ID":                    cfg.ProjectID,
+		"LINEAR_STATE_READY_TO_PROPOSE_ID":     cfg.ReadyToProposeStateID,
+		"LINEAR_STATE_READY_TO_CODE_ID":        cfg.ReadyToCodeStateID,
+		"LINEAR_STATE_READY_TO_ARCHIVE_ID":     cfg.ReadyToArchiveStateID,
+		"LINEAR_STATE_NEED_PROPOSAL_REVIEW_ID": cfg.NeedProposalReviewStateID,
+		"LINEAR_STATE_NEED_CODE_REVIEW_ID":     cfg.NeedCodeReviewStateID,
+		"LINEAR_STATE_NEED_ARCHIVE_REVIEW_ID":  cfg.NeedArchiveReviewStateID,
+	}
+
+	for key, value := range requiredValues {
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("%s must not be empty", key)
+		}
+	}
+
+	return nil
+}
+
+func (cfg LinearTaskManagerConfig) ManagedStateIDs() []string {
+	states := []string{
+		strings.TrimSpace(cfg.ReadyToProposeStateID),
+		strings.TrimSpace(cfg.ReadyToCodeStateID),
+		strings.TrimSpace(cfg.ReadyToArchiveStateID),
+	}
+
+	result := make([]string, 0, len(states))
+	seen := make(map[string]struct{}, len(states))
+	for _, state := range states {
+		if state == "" {
+			continue
+		}
+		if _, ok := seen[state]; ok {
+			continue
+		}
+		seen[state] = struct{}{}
+		result = append(result, state)
+	}
+
+	return result
 }
 
 func loadDotEnv() error {

@@ -23,6 +23,15 @@ var envKeys = []string{
 	"PROPOSAL_GIT_PATH",
 	"PROPOSAL_CODEX_PATH",
 	"PROPOSAL_GH_PATH",
+	"LINEAR_API_URL",
+	"LINEAR_API_TOKEN",
+	"LINEAR_PROJECT_ID",
+	"LINEAR_STATE_READY_TO_PROPOSE_ID",
+	"LINEAR_STATE_READY_TO_CODE_ID",
+	"LINEAR_STATE_READY_TO_ARCHIVE_ID",
+	"LINEAR_STATE_NEED_PROPOSAL_REVIEW_ID",
+	"LINEAR_STATE_NEED_CODE_REVIEW_ID",
+	"LINEAR_STATE_NEED_ARCHIVE_REVIEW_ID",
 	"LOGSTASH_ADDR",
 	"LOGSTASH_BUFFER_SIZE",
 	"LOGSTASH_DIAL_TIMEOUT",
@@ -64,6 +73,9 @@ func TestLoadUsesDefaults(t *testing.T) {
 		t.Fatalf("ProposalRunner.GitPath = %q, want %q", cfg.ProposalRunner.GitPath, defaultProposalGitPath)
 	}
 
+	if cfg.TaskManager.APIURL != defaultLinearAPIURL {
+		t.Fatalf("TaskManager.APIURL = %q, want %q", cfg.TaskManager.APIURL, defaultLinearAPIURL)
+	}
 	if cfg.Logstash.Addr != "" {
 		t.Fatalf("Logstash.Addr = %q, want empty by default", cfg.Logstash.Addr)
 	}
@@ -143,6 +155,15 @@ func TestLoadReadsEnvironment(t *testing.T) {
 	t.Setenv("PROPOSAL_GIT_PATH", "/usr/local/bin/git")
 	t.Setenv("PROPOSAL_CODEX_PATH", "/usr/local/bin/codex")
 	t.Setenv("PROPOSAL_GH_PATH", "/usr/local/bin/gh")
+	t.Setenv("LINEAR_API_URL", "https://linear.example/graphql")
+	t.Setenv("LINEAR_API_TOKEN", "linear-token")
+	t.Setenv("LINEAR_PROJECT_ID", "project-123")
+	t.Setenv("LINEAR_STATE_READY_TO_PROPOSE_ID", "state-propose")
+	t.Setenv("LINEAR_STATE_READY_TO_CODE_ID", "state-code")
+	t.Setenv("LINEAR_STATE_READY_TO_ARCHIVE_ID", "state-archive")
+	t.Setenv("LINEAR_STATE_NEED_PROPOSAL_REVIEW_ID", "state-proposal-review")
+	t.Setenv("LINEAR_STATE_NEED_CODE_REVIEW_ID", "state-code-review")
+	t.Setenv("LINEAR_STATE_NEED_ARCHIVE_REVIEW_ID", "state-archive-review")
 
 	cfg, err := Load()
 	if err != nil {
@@ -197,6 +218,35 @@ func TestLoadReadsEnvironment(t *testing.T) {
 	if runnerCfg.GHPath != "/usr/local/bin/gh" {
 		t.Fatalf("GHPath = %q", runnerCfg.GHPath)
 	}
+
+	taskManagerCfg := cfg.TaskManager
+	if taskManagerCfg.APIURL != "https://linear.example/graphql" {
+		t.Fatalf("APIURL = %q", taskManagerCfg.APIURL)
+	}
+	if taskManagerCfg.APIToken != "linear-token" {
+		t.Fatalf("APIToken = %q", taskManagerCfg.APIToken)
+	}
+	if taskManagerCfg.ProjectID != "project-123" {
+		t.Fatalf("ProjectID = %q", taskManagerCfg.ProjectID)
+	}
+	if taskManagerCfg.ReadyToProposeStateID != "state-propose" {
+		t.Fatalf("ReadyToProposeStateID = %q", taskManagerCfg.ReadyToProposeStateID)
+	}
+	if taskManagerCfg.ReadyToCodeStateID != "state-code" {
+		t.Fatalf("ReadyToCodeStateID = %q", taskManagerCfg.ReadyToCodeStateID)
+	}
+	if taskManagerCfg.ReadyToArchiveStateID != "state-archive" {
+		t.Fatalf("ReadyToArchiveStateID = %q", taskManagerCfg.ReadyToArchiveStateID)
+	}
+	if taskManagerCfg.NeedProposalReviewStateID != "state-proposal-review" {
+		t.Fatalf("NeedProposalReviewStateID = %q", taskManagerCfg.NeedProposalReviewStateID)
+	}
+	if taskManagerCfg.NeedCodeReviewStateID != "state-code-review" {
+		t.Fatalf("NeedCodeReviewStateID = %q", taskManagerCfg.NeedCodeReviewStateID)
+	}
+	if taskManagerCfg.NeedArchiveReviewStateID != "state-archive-review" {
+		t.Fatalf("NeedArchiveReviewStateID = %q", taskManagerCfg.NeedArchiveReviewStateID)
+	}
 }
 
 func TestLoadReturnsErrorForInvalidHTTPPort(t *testing.T) {
@@ -226,6 +276,13 @@ APP_NAME="orch app" # inline comment
 PROPOSAL_REPOSITORY_URL='git@github.com:example/from-dotenv.git'
 PROPOSAL_BASE_BRANCH=feature/base
 PROPOSAL_CLEANUP_TEMP=true
+LINEAR_PROJECT_ID='project-from-dotenv'
+LINEAR_STATE_READY_TO_PROPOSE_ID="state-propose"
+LINEAR_STATE_READY_TO_CODE_ID='state-code'
+LINEAR_STATE_READY_TO_ARCHIVE_ID="state-archive"
+LINEAR_STATE_NEED_PROPOSAL_REVIEW_ID="state-proposal-review"
+LINEAR_STATE_NEED_CODE_REVIEW_ID="state-code-review"
+LINEAR_STATE_NEED_ARCHIVE_REVIEW_ID="state-archive-review"
 `)
 
 	cfg, err := Load()
@@ -249,6 +306,16 @@ PROPOSAL_CLEANUP_TEMP=true
 		t.Fatal("CleanupTemp = false, want true")
 	}
 
+	if cfg.TaskManager.ProjectID != "project-from-dotenv" {
+		t.Fatalf("ProjectID = %q", cfg.TaskManager.ProjectID)
+	}
+	if cfg.TaskManager.ReadyToArchiveStateID != "state-archive" {
+		t.Fatalf("ReadyToArchiveStateID = %q", cfg.TaskManager.ReadyToArchiveStateID)
+	}
+	if cfg.TaskManager.NeedCodeReviewStateID != "state-code-review" {
+		t.Fatalf("NeedCodeReviewStateID = %q", cfg.TaskManager.NeedCodeReviewStateID)
+	}
+
 }
 
 func TestLoadProcessEnvironmentOverridesDotEnv(t *testing.T) {
@@ -256,8 +323,10 @@ func TestLoadProcessEnvironmentOverridesDotEnv(t *testing.T) {
 	writeDotEnv(t, `
 PROPOSAL_REPOSITORY_URL=git@github.com:example/from-dotenv.git
 PROPOSAL_BASE_BRANCH=main
+LINEAR_PROJECT_ID=project-from-dotenv
 `)
 	t.Setenv("PROPOSAL_REPOSITORY_URL", "git@github.com:example/from-process.git")
+	t.Setenv("LINEAR_PROJECT_ID", "project-from-process")
 
 	cfg, err := Load()
 	if err != nil {
@@ -270,6 +339,10 @@ PROPOSAL_BASE_BRANCH=main
 
 	if cfg.ProposalRunner.BaseBranch != "main" {
 		t.Fatalf("BaseBranch = %q, want .env value", cfg.ProposalRunner.BaseBranch)
+	}
+
+	if cfg.TaskManager.ProjectID != "project-from-process" {
+		t.Fatalf("ProjectID = %q, want process env value", cfg.TaskManager.ProjectID)
 	}
 }
 
@@ -331,6 +404,89 @@ func TestProposalRunnerConfigValidate(t *testing.T) {
 				t.Fatalf("Validate() error = %q, want substring %q", err.Error(), tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestLinearTaskManagerConfigValidate(t *testing.T) {
+	valid := LinearTaskManagerConfig{
+		APIURL:                    defaultLinearAPIURL,
+		APIToken:                  "linear-token",
+		ProjectID:                 "project-123",
+		ReadyToProposeStateID:     "state-propose",
+		ReadyToCodeStateID:        "state-code",
+		ReadyToArchiveStateID:     "state-archive",
+		NeedProposalReviewStateID: "state-proposal-review",
+		NeedCodeReviewStateID:     "state-code-review",
+		NeedArchiveReviewStateID:  "state-archive-review",
+	}
+
+	tests := []struct {
+		name    string
+		mutate  func(*LinearTaskManagerConfig)
+		wantErr string
+	}{
+		{
+			name: "valid",
+		},
+		{
+			name: "missing project",
+			mutate: func(cfg *LinearTaskManagerConfig) {
+				cfg.ProjectID = " "
+			},
+			wantErr: "LINEAR_PROJECT_ID",
+		},
+		{
+			name: "missing ready to code state",
+			mutate: func(cfg *LinearTaskManagerConfig) {
+				cfg.ReadyToCodeStateID = " "
+			},
+			wantErr: "LINEAR_STATE_READY_TO_CODE_ID",
+		},
+		{
+			name: "missing proposal review state",
+			mutate: func(cfg *LinearTaskManagerConfig) {
+				cfg.NeedProposalReviewStateID = " "
+			},
+			wantErr: "LINEAR_STATE_NEED_PROPOSAL_REVIEW_ID",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := valid
+			if tt.mutate != nil {
+				tt.mutate(&cfg)
+			}
+
+			err := cfg.Validate()
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Validate() returned error: %v", err)
+				}
+				return
+			}
+
+			if err == nil {
+				t.Fatal("Validate() error = nil, want non-nil")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Validate() error = %q, want substring %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestLinearTaskManagerConfigManagedStatesDeduplicatesAndTrims(t *testing.T) {
+	cfg := LinearTaskManagerConfig{
+		ReadyToProposeStateID: " state-propose ",
+		ReadyToCodeStateID:    "state-code",
+		ReadyToArchiveStateID: "state-propose",
+	}
+
+	got := cfg.ManagedStateIDs()
+	want := []string{"state-propose", "state-code"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("ManagedStateIDs() = %#v, want %#v", got, want)
 	}
 }
 

@@ -24,8 +24,9 @@ type ProposalRunner interface {
 }
 
 type Config struct {
-	ReadyToProposeStateID     string
-	NeedProposalReviewStateID string
+	ReadyToProposeStateID      string
+	ProposingInProgressStateID string
+	NeedProposalReviewStateID  string
 }
 
 type Orchestrator struct {
@@ -77,6 +78,11 @@ func (orch *Orchestrator) RunProposalsOnce(ctx context.Context) error {
 func (orch *Orchestrator) processTask(ctx context.Context, logger steplog.Logger, task taskmanager.Task) error {
 	taskRef := taskReference(task)
 	logger.Infof(module, "process proposal task=%s identifier=%s", task.ID, task.Identifier)
+
+	if err := orch.TaskManager.MoveTask(ctx, task.ID, orch.Config.ProposingInProgressStateID); err != nil {
+		logger.Errorf(module, "move proposal task %s state=%s: %v", taskRef, orch.Config.ProposingInProgressStateID, err)
+		return fmt.Errorf("process proposal %s: move to proposing in-progress state %s: %w", taskRef, orch.Config.ProposingInProgressStateID, err)
+	}
 
 	proposalInput := BuildProposalInput(task)
 	prURL, err := orch.ProposalRunner.Run(ctx, proposalInput)
@@ -168,6 +174,9 @@ func (orch *Orchestrator) validate() error {
 	}
 	if strings.TrimSpace(orch.Config.ReadyToProposeStateID) == "" {
 		return fmt.Errorf("ready-to-propose state id must not be empty")
+	}
+	if strings.TrimSpace(orch.Config.ProposingInProgressStateID) == "" {
+		return fmt.Errorf("proposing-in-progress state id must not be empty")
 	}
 	if strings.TrimSpace(orch.Config.NeedProposalReviewStateID) == "" {
 		return fmt.Errorf("need-proposal-review state id must not be empty")

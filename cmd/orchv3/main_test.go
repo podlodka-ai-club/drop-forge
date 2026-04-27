@@ -150,11 +150,35 @@ func TestRunOrchestrateProposalsWiresDependenciesAndKeepsStdoutEmpty(t *testing.
 	if state.orchestratorConfig.TaskManager.ReadyToProposeStateID != "state-propose" {
 		t.Fatalf("orchestrator ready state = %q", state.orchestratorConfig.TaskManager.ReadyToProposeStateID)
 	}
+	if state.orchestratorConfig.TaskManager.ProposingInProgressStateID != "state-proposing-progress" {
+		t.Fatalf("orchestrator proposing in-progress state = %q", state.orchestratorConfig.TaskManager.ProposingInProgressStateID)
+	}
 	if state.taskManagerLogOut == nil || state.runnerLogOut == nil || state.orchestratorLogOut == nil {
 		t.Fatal("log outputs should be wired")
 	}
 	if state.orchestratorTaskManager == nil || state.orchestratorRunner == nil {
 		t.Fatal("orchestrator dependencies should be wired")
+	}
+}
+
+func TestDefaultProposalOrchestratorWiresProposingInProgressState(t *testing.T) {
+	cfg := config.Config{
+		AppName: "orchv3-test",
+		TaskManager: config.LinearTaskManagerConfig{
+			ReadyToProposeStateID:      "state-propose",
+			ProposingInProgressStateID: "state-proposing-progress",
+			NeedProposalReviewStateID:  "state-proposal-review",
+		},
+	}
+	tasks := &fakeTaskManager{}
+	runner := &fakeSingleProposalRunner{}
+
+	orchestrator, ok := defaultDeps().newProposalOrchestrator(cfg, tasks, runner, io.Discard).(*coreorch.Orchestrator)
+	if !ok {
+		t.Fatalf("orchestrator type = %T, want *coreorch.Orchestrator", orchestrator)
+	}
+	if orchestrator.Config.ProposingInProgressStateID != "state-proposing-progress" {
+		t.Fatalf("ProposingInProgressStateID = %q", orchestrator.Config.ProposingInProgressStateID)
 	}
 }
 
@@ -277,9 +301,10 @@ func testDeps() appDeps {
 					RepositoryURL: "git@github.com:example/repo.git",
 				},
 				TaskManager: config.LinearTaskManagerConfig{
-					ProjectID:                 "project-123",
-					ReadyToProposeStateID:     "state-propose",
-					NeedProposalReviewStateID: "state-proposal-review",
+					ProjectID:                  "project-123",
+					ReadyToProposeStateID:      "state-propose",
+					ProposingInProgressStateID: "state-proposing-progress",
+					NeedProposalReviewStateID:  "state-proposal-review",
 				},
 			}, nil
 		},

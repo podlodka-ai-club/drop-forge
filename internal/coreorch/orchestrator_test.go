@@ -54,11 +54,14 @@ func TestRunProposalsOnceProcessesOnlyReadyTasksSequentially(t *testing.T) {
 	if got := strings.Join(taskManager.addPRTaskIDs, ","); got != "issue-1,issue-3" {
 		t.Fatalf("AddPR task order = %q", got)
 	}
-	if got := strings.Join(taskManager.moveTaskIDs, ","); got != "issue-1,issue-3" {
+	if got := strings.Join(taskManager.moveTaskIDs, ","); got != "issue-1,issue-1,issue-3,issue-3" {
 		t.Fatalf("MoveTask order = %q", got)
 	}
-	if got := strings.Join(taskManager.moveStateIDs, ","); got != "state-proposal-review,state-proposal-review" {
+	if got := strings.Join(taskManager.moveStateIDs, ","); got != "state-proposing-progress,state-proposal-review,state-proposing-progress,state-proposal-review" {
 		t.Fatalf("MoveTask states = %q", got)
+	}
+	if got := strings.Join(taskManager.calls, ","); got != "move:issue-1:state-proposing-progress,add-pr:issue-1,move:issue-1:state-proposal-review,move:issue-3:state-proposing-progress,add-pr:issue-3,move:issue-3:state-proposal-review" {
+		t.Fatalf("mutation calls = %q", got)
 	}
 
 	events := decodeEvents(t, logs.String())
@@ -194,7 +197,50 @@ func TestBuildProposalInputProducesPRTitleFromTaskTitle(t *testing.T) {
 	})
 }
 
-func TestRunProposalsOnceRunnerFailureDoesNotMutateTask(t *testing.T) {
+func TestRunProposalsOnceRequiresProposingInProgressState(t *testing.T) {
+	taskManager := &recordingTaskManager{}
+	runner := &recordingProposalRunner{}
+	orch := testOrchestrator(taskManager, runner, nil)
+	orch.Config.ProposingInProgressStateID = " "
+
+	err := orch.RunProposalsOnce(context.Background())
+	if err == nil {
+		t.Fatal("RunProposalsOnce() error = nil, want non-nil")
+	}
+	if !strings.Contains(err.Error(), "proposing-in-progress state id") {
+		t.Fatalf("error = %q, want proposing-in-progress state context", err.Error())
+	}
+}
+
+func TestRunProposalsOnceInProgressMoveFailureDoesNotRunProposal(t *testing.T) {
+	taskManager := &recordingTaskManager{
+		tasks: []taskmanager.Task{readyTask("issue-1", "ENG-1", "First")},
+		moveErrByStateID: map[string]error{
+			"state-proposing-progress": errors.New("linear move failed"),
+		},
+	}
+	runner := &recordingProposalRunner{}
+	orch := testOrchestrator(taskManager, runner, nil)
+
+	err := orch.RunProposalsOnce(context.Background())
+	if err == nil {
+		t.Fatal("RunProposalsOnce() error = nil, want non-nil")
+	}
+	if !strings.Contains(err.Error(), "task=issue-1 identifier=ENG-1") || !strings.Contains(err.Error(), "move to proposing in-progress state state-proposing-progress") {
+		t.Fatalf("error = %q, want task and in-progress move context", err.Error())
+	}
+	if len(runner.inputs) != 0 {
+		t.Fatalf("runner inputs len = %d, want 0", len(runner.inputs))
+	}
+	if len(taskManager.addPRTaskIDs) != 0 {
+		t.Fatalf("AddPR calls = %d, want 0", len(taskManager.addPRTaskIDs))
+	}
+	if got := strings.Join(taskManager.moveStateIDs, ","); got != "state-proposing-progress" {
+		t.Fatalf("MoveTask states = %q", got)
+	}
+}
+
+func TestRunProposalsOnceRunnerFailureLeavesTaskInProgress(t *testing.T) {
 	taskManager := &recordingTaskManager{tasks: []taskmanager.Task{readyTask("issue-1", "ENG-1", "First")}}
 	runner := &recordingProposalRunner{err: errors.New("codex failed")}
 	orch := testOrchestrator(taskManager, runner, nil)
@@ -206,12 +252,15 @@ func TestRunProposalsOnceRunnerFailureDoesNotMutateTask(t *testing.T) {
 	if !strings.Contains(err.Error(), "task=issue-1 identifier=ENG-1") || !strings.Contains(err.Error(), "run proposal") {
 		t.Fatalf("error = %q, want task and operation context", err.Error())
 	}
-	if len(taskManager.addPRTaskIDs) != 0 || len(taskManager.moveTaskIDs) != 0 {
-		t.Fatalf("mutations = addPR %#v move %#v, want none", taskManager.addPRTaskIDs, taskManager.moveTaskIDs)
+	if len(taskManager.addPRTaskIDs) != 0 {
+		t.Fatalf("AddPR calls = %d, want 0", len(taskManager.addPRTaskIDs))
+	}
+	if got := strings.Join(taskManager.moveStateIDs, ","); got != "state-proposing-progress" {
+		t.Fatalf("MoveTask states = %q", got)
 	}
 }
 
-func TestRunProposalsOnceAddPRFailureDoesNotMoveTask(t *testing.T) {
+func TestRunProposalsOnceAddPRFailureDoesNotMoveTaskToReview(t *testing.T) {
 	taskManager := &recordingTaskManager{
 		tasks:    []taskmanager.Task{readyTask("issue-1", "ENG-1", "First")},
 		addPRErr: errors.New("linear attach failed"),
@@ -229,15 +278,17 @@ func TestRunProposalsOnceAddPRFailureDoesNotMoveTask(t *testing.T) {
 	if len(taskManager.addPRTaskIDs) != 1 {
 		t.Fatalf("AddPR calls = %d, want 1", len(taskManager.addPRTaskIDs))
 	}
-	if len(taskManager.moveTaskIDs) != 0 {
-		t.Fatalf("MoveTask calls = %d, want 0", len(taskManager.moveTaskIDs))
+	if got := strings.Join(taskManager.moveStateIDs, ","); got != "state-proposing-progress" {
+		t.Fatalf("MoveTask states = %q", got)
 	}
 }
 
 func TestRunProposalsOnceMoveTaskFailureReturnsPartialSuccessContext(t *testing.T) {
 	taskManager := &recordingTaskManager{
-		tasks:   []taskmanager.Task{readyTask("issue-1", "ENG-1", "First")},
-		moveErr: errors.New("linear move failed"),
+		tasks: []taskmanager.Task{readyTask("issue-1", "ENG-1", "First")},
+		moveErrByStateID: map[string]error{
+			"state-proposal-review": errors.New("linear move failed"),
+		},
 	}
 	runner := &recordingProposalRunner{urls: []string{"https://github.com/example/repo/pull/1"}}
 	orch := testOrchestrator(taskManager, runner, nil)
@@ -249,20 +300,25 @@ func TestRunProposalsOnceMoveTaskFailureReturnsPartialSuccessContext(t *testing.
 	if !strings.Contains(err.Error(), "move to proposal review state state-proposal-review after attaching pr https://github.com/example/repo/pull/1") {
 		t.Fatalf("error = %q, want move context", err.Error())
 	}
-	if len(taskManager.addPRTaskIDs) != 1 || len(taskManager.moveTaskIDs) != 1 {
+	if len(taskManager.addPRTaskIDs) != 1 || len(taskManager.moveTaskIDs) != 2 {
 		t.Fatalf("mutations = addPR %#v move %#v", taskManager.addPRTaskIDs, taskManager.moveTaskIDs)
+	}
+	if got := strings.Join(taskManager.moveStateIDs, ","); got != "state-proposing-progress,state-proposal-review" {
+		t.Fatalf("MoveTask states = %q", got)
 	}
 }
 
 type recordingTaskManager struct {
-	tasks        []taskmanager.Task
-	getTasksErr  error
-	addPRErr     error
-	moveErr      error
-	addPRTaskIDs []string
-	addPRURLs    []string
-	moveTaskIDs  []string
-	moveStateIDs []string
+	tasks            []taskmanager.Task
+	getTasksErr      error
+	addPRErr         error
+	moveErr          error
+	moveErrByStateID map[string]error
+	addPRTaskIDs     []string
+	addPRURLs        []string
+	moveTaskIDs      []string
+	moveStateIDs     []string
+	calls            []string
 }
 
 func (manager *recordingTaskManager) GetTasks(ctx context.Context) ([]taskmanager.Task, error) {
@@ -272,12 +328,19 @@ func (manager *recordingTaskManager) GetTasks(ctx context.Context) ([]taskmanage
 func (manager *recordingTaskManager) AddPR(ctx context.Context, taskID string, prURL string) error {
 	manager.addPRTaskIDs = append(manager.addPRTaskIDs, taskID)
 	manager.addPRURLs = append(manager.addPRURLs, prURL)
+	manager.calls = append(manager.calls, "add-pr:"+taskID)
 	return manager.addPRErr
 }
 
 func (manager *recordingTaskManager) MoveTask(ctx context.Context, taskID string, stateID string) error {
 	manager.moveTaskIDs = append(manager.moveTaskIDs, taskID)
 	manager.moveStateIDs = append(manager.moveStateIDs, stateID)
+	manager.calls = append(manager.calls, "move:"+taskID+":"+stateID)
+	if manager.moveErrByStateID != nil {
+		if err := manager.moveErrByStateID[stateID]; err != nil {
+			return err
+		}
+	}
 	return manager.moveErr
 }
 
@@ -344,8 +407,9 @@ func testOrchestrator(taskManager TaskManager, runner ProposalRunner, logs *byte
 
 	return Orchestrator{
 		Config: Config{
-			ReadyToProposeStateID:     "state-propose",
-			NeedProposalReviewStateID: "state-proposal-review",
+			ReadyToProposeStateID:      "state-propose",
+			ProposingInProgressStateID: "state-proposing-progress",
+			NeedProposalReviewStateID:  "state-proposal-review",
 		},
 		TaskManager:    taskManager,
 		ProposalRunner: runner,

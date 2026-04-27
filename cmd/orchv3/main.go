@@ -143,8 +143,9 @@ func defaultDeps() appDeps {
 		newProposalOrchestrator: func(cfg config.Config, tasks coreorch.TaskManager, runner coreorch.ProposalRunner, logOut io.Writer) proposalOrchestrator {
 			return &coreorch.Orchestrator{
 				Config: coreorch.Config{
-					ReadyToProposeStateID:     cfg.TaskManager.ReadyToProposeStateID,
-					NeedProposalReviewStateID: cfg.TaskManager.NeedProposalReviewStateID,
+					ReadyToProposeStateID:      cfg.TaskManager.ReadyToProposeStateID,
+					ProposingInProgressStateID: cfg.TaskManager.ProposingInProgressStateID,
+					NeedProposalReviewStateID:  cfg.TaskManager.NeedProposalReviewStateID,
 				},
 				TaskManager:    tasks,
 				ProposalRunner: runner,

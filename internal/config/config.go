@@ -61,15 +61,18 @@ type ProposalRunnerConfig struct {
 }
 
 type LinearTaskManagerConfig struct {
-	APIURL                    string
-	APIToken                  string
-	ProjectID                 string
-	ReadyToProposeStateID     string
-	ReadyToCodeStateID        string
-	ReadyToArchiveStateID     string
-	NeedProposalReviewStateID string
-	NeedCodeReviewStateID     string
-	NeedArchiveReviewStateID  string
+	APIURL                     string
+	APIToken                   string
+	ProjectID                  string
+	ReadyToProposeStateID      string
+	ReadyToCodeStateID         string
+	ReadyToArchiveStateID      string
+	ProposingInProgressStateID string
+	CodeInProgressStateID      string
+	ArchivingInProgressStateID string
+	NeedProposalReviewStateID  string
+	NeedCodeReviewStateID      string
+	NeedArchiveReviewStateID   string
 }
 
 func Load() (Config, error) {
@@ -110,15 +113,18 @@ func Load() (Config, error) {
 			GHPath:        trimmedStringFromEnv("PROPOSAL_GH_PATH", defaultProposalGHPath),
 		},
 		TaskManager: LinearTaskManagerConfig{
-			APIURL:                    trimmedStringFromEnv("LINEAR_API_URL", defaultLinearAPIURL),
-			APIToken:                  trimmedStringFromEnv("LINEAR_API_TOKEN", ""),
-			ProjectID:                 trimmedStringFromEnv("LINEAR_PROJECT_ID", ""),
-			ReadyToProposeStateID:     trimmedStringFromEnv("LINEAR_STATE_READY_TO_PROPOSE_ID", ""),
-			ReadyToCodeStateID:        trimmedStringFromEnv("LINEAR_STATE_READY_TO_CODE_ID", ""),
-			ReadyToArchiveStateID:     trimmedStringFromEnv("LINEAR_STATE_READY_TO_ARCHIVE_ID", ""),
-			NeedProposalReviewStateID: trimmedStringFromEnv("LINEAR_STATE_NEED_PROPOSAL_REVIEW_ID", ""),
-			NeedCodeReviewStateID:     trimmedStringFromEnv("LINEAR_STATE_NEED_CODE_REVIEW_ID", ""),
-			NeedArchiveReviewStateID:  trimmedStringFromEnv("LINEAR_STATE_NEED_ARCHIVE_REVIEW_ID", ""),
+			APIURL:                     trimmedStringFromEnv("LINEAR_API_URL", defaultLinearAPIURL),
+			APIToken:                   trimmedStringFromEnv("LINEAR_API_TOKEN", ""),
+			ProjectID:                  trimmedStringFromEnv("LINEAR_PROJECT_ID", ""),
+			ReadyToProposeStateID:      trimmedStringFromEnv("LINEAR_STATE_READY_TO_PROPOSE_ID", ""),
+			ReadyToCodeStateID:         trimmedStringFromEnv("LINEAR_STATE_READY_TO_CODE_ID", ""),
+			ReadyToArchiveStateID:      trimmedStringFromEnv("LINEAR_STATE_READY_TO_ARCHIVE_ID", ""),
+			ProposingInProgressStateID: trimmedStringFromEnv("LINEAR_STATE_PROPOSING_IN_PROGRESS_ID", ""),
+			CodeInProgressStateID:      trimmedStringFromEnv("LINEAR_STATE_CODE_IN_PROGRESS_ID", ""),
+			ArchivingInProgressStateID: trimmedStringFromEnv("LINEAR_STATE_ARCHIVING_IN_PROGRESS_ID", ""),
+			NeedProposalReviewStateID:  trimmedStringFromEnv("LINEAR_STATE_NEED_PROPOSAL_REVIEW_ID", ""),
+			NeedCodeReviewStateID:      trimmedStringFromEnv("LINEAR_STATE_NEED_CODE_REVIEW_ID", ""),
+			NeedArchiveReviewStateID:   trimmedStringFromEnv("LINEAR_STATE_NEED_ARCHIVE_REVIEW_ID", ""),
 		},
 		Logstash: logstashCfg,
 	}, nil
@@ -185,15 +191,18 @@ func (cfg ProposalRunnerConfig) Validate() error {
 
 func (cfg LinearTaskManagerConfig) Validate() error {
 	requiredValues := map[string]string{
-		"LINEAR_API_URL":                       cfg.APIURL,
-		"LINEAR_API_TOKEN":                     cfg.APIToken,
-		"LINEAR_PROJECT_ID":                    cfg.ProjectID,
-		"LINEAR_STATE_READY_TO_PROPOSE_ID":     cfg.ReadyToProposeStateID,
-		"LINEAR_STATE_READY_TO_CODE_ID":        cfg.ReadyToCodeStateID,
-		"LINEAR_STATE_READY_TO_ARCHIVE_ID":     cfg.ReadyToArchiveStateID,
-		"LINEAR_STATE_NEED_PROPOSAL_REVIEW_ID": cfg.NeedProposalReviewStateID,
-		"LINEAR_STATE_NEED_CODE_REVIEW_ID":     cfg.NeedCodeReviewStateID,
-		"LINEAR_STATE_NEED_ARCHIVE_REVIEW_ID":  cfg.NeedArchiveReviewStateID,
+		"LINEAR_API_URL":                        cfg.APIURL,
+		"LINEAR_API_TOKEN":                      cfg.APIToken,
+		"LINEAR_PROJECT_ID":                     cfg.ProjectID,
+		"LINEAR_STATE_READY_TO_PROPOSE_ID":      cfg.ReadyToProposeStateID,
+		"LINEAR_STATE_READY_TO_CODE_ID":         cfg.ReadyToCodeStateID,
+		"LINEAR_STATE_READY_TO_ARCHIVE_ID":      cfg.ReadyToArchiveStateID,
+		"LINEAR_STATE_PROPOSING_IN_PROGRESS_ID": cfg.ProposingInProgressStateID,
+		"LINEAR_STATE_CODE_IN_PROGRESS_ID":      cfg.CodeInProgressStateID,
+		"LINEAR_STATE_ARCHIVING_IN_PROGRESS_ID": cfg.ArchivingInProgressStateID,
+		"LINEAR_STATE_NEED_PROPOSAL_REVIEW_ID":  cfg.NeedProposalReviewStateID,
+		"LINEAR_STATE_NEED_CODE_REVIEW_ID":      cfg.NeedCodeReviewStateID,
+		"LINEAR_STATE_NEED_ARCHIVE_REVIEW_ID":   cfg.NeedArchiveReviewStateID,
 	}
 
 	for key, value := range requiredValues {

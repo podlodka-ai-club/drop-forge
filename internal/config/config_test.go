@@ -29,6 +29,9 @@ var envKeys = []string{
 	"LINEAR_STATE_READY_TO_PROPOSE_ID",
 	"LINEAR_STATE_READY_TO_CODE_ID",
 	"LINEAR_STATE_READY_TO_ARCHIVE_ID",
+	"LINEAR_STATE_PROPOSING_IN_PROGRESS_ID",
+	"LINEAR_STATE_CODE_IN_PROGRESS_ID",
+	"LINEAR_STATE_ARCHIVING_IN_PROGRESS_ID",
 	"LINEAR_STATE_NEED_PROPOSAL_REVIEW_ID",
 	"LINEAR_STATE_NEED_CODE_REVIEW_ID",
 	"LINEAR_STATE_NEED_ARCHIVE_REVIEW_ID",
@@ -161,6 +164,9 @@ func TestLoadReadsEnvironment(t *testing.T) {
 	t.Setenv("LINEAR_STATE_READY_TO_PROPOSE_ID", "state-propose")
 	t.Setenv("LINEAR_STATE_READY_TO_CODE_ID", "state-code")
 	t.Setenv("LINEAR_STATE_READY_TO_ARCHIVE_ID", "state-archive")
+	t.Setenv("LINEAR_STATE_PROPOSING_IN_PROGRESS_ID", "state-proposing-progress")
+	t.Setenv("LINEAR_STATE_CODE_IN_PROGRESS_ID", "state-code-progress")
+	t.Setenv("LINEAR_STATE_ARCHIVING_IN_PROGRESS_ID", "state-archiving-progress")
 	t.Setenv("LINEAR_STATE_NEED_PROPOSAL_REVIEW_ID", "state-proposal-review")
 	t.Setenv("LINEAR_STATE_NEED_CODE_REVIEW_ID", "state-code-review")
 	t.Setenv("LINEAR_STATE_NEED_ARCHIVE_REVIEW_ID", "state-archive-review")
@@ -238,6 +244,15 @@ func TestLoadReadsEnvironment(t *testing.T) {
 	if taskManagerCfg.ReadyToArchiveStateID != "state-archive" {
 		t.Fatalf("ReadyToArchiveStateID = %q", taskManagerCfg.ReadyToArchiveStateID)
 	}
+	if taskManagerCfg.ProposingInProgressStateID != "state-proposing-progress" {
+		t.Fatalf("ProposingInProgressStateID = %q", taskManagerCfg.ProposingInProgressStateID)
+	}
+	if taskManagerCfg.CodeInProgressStateID != "state-code-progress" {
+		t.Fatalf("CodeInProgressStateID = %q", taskManagerCfg.CodeInProgressStateID)
+	}
+	if taskManagerCfg.ArchivingInProgressStateID != "state-archiving-progress" {
+		t.Fatalf("ArchivingInProgressStateID = %q", taskManagerCfg.ArchivingInProgressStateID)
+	}
 	if taskManagerCfg.NeedProposalReviewStateID != "state-proposal-review" {
 		t.Fatalf("NeedProposalReviewStateID = %q", taskManagerCfg.NeedProposalReviewStateID)
 	}
@@ -280,6 +295,9 @@ LINEAR_PROJECT_ID='project-from-dotenv'
 LINEAR_STATE_READY_TO_PROPOSE_ID="state-propose"
 LINEAR_STATE_READY_TO_CODE_ID='state-code'
 LINEAR_STATE_READY_TO_ARCHIVE_ID="state-archive"
+LINEAR_STATE_PROPOSING_IN_PROGRESS_ID="state-proposing-progress"
+LINEAR_STATE_CODE_IN_PROGRESS_ID='state-code-progress'
+LINEAR_STATE_ARCHIVING_IN_PROGRESS_ID="state-archiving-progress"
 LINEAR_STATE_NEED_PROPOSAL_REVIEW_ID="state-proposal-review"
 LINEAR_STATE_NEED_CODE_REVIEW_ID="state-code-review"
 LINEAR_STATE_NEED_ARCHIVE_REVIEW_ID="state-archive-review"
@@ -311,6 +329,9 @@ LINEAR_STATE_NEED_ARCHIVE_REVIEW_ID="state-archive-review"
 	}
 	if cfg.TaskManager.ReadyToArchiveStateID != "state-archive" {
 		t.Fatalf("ReadyToArchiveStateID = %q", cfg.TaskManager.ReadyToArchiveStateID)
+	}
+	if cfg.TaskManager.ProposingInProgressStateID != "state-proposing-progress" {
+		t.Fatalf("ProposingInProgressStateID = %q", cfg.TaskManager.ProposingInProgressStateID)
 	}
 	if cfg.TaskManager.NeedCodeReviewStateID != "state-code-review" {
 		t.Fatalf("NeedCodeReviewStateID = %q", cfg.TaskManager.NeedCodeReviewStateID)
@@ -440,15 +461,18 @@ func TestProposalRunnerConfigValidate(t *testing.T) {
 
 func TestLinearTaskManagerConfigValidate(t *testing.T) {
 	valid := LinearTaskManagerConfig{
-		APIURL:                    defaultLinearAPIURL,
-		APIToken:                  "linear-token",
-		ProjectID:                 "project-123",
-		ReadyToProposeStateID:     "state-propose",
-		ReadyToCodeStateID:        "state-code",
-		ReadyToArchiveStateID:     "state-archive",
-		NeedProposalReviewStateID: "state-proposal-review",
-		NeedCodeReviewStateID:     "state-code-review",
-		NeedArchiveReviewStateID:  "state-archive-review",
+		APIURL:                     defaultLinearAPIURL,
+		APIToken:                   "linear-token",
+		ProjectID:                  "project-123",
+		ReadyToProposeStateID:      "state-propose",
+		ReadyToCodeStateID:         "state-code",
+		ReadyToArchiveStateID:      "state-archive",
+		ProposingInProgressStateID: "state-proposing-progress",
+		CodeInProgressStateID:      "state-code-progress",
+		ArchivingInProgressStateID: "state-archiving-progress",
+		NeedProposalReviewStateID:  "state-proposal-review",
+		NeedCodeReviewStateID:      "state-code-review",
+		NeedArchiveReviewStateID:   "state-archive-review",
 	}
 
 	tests := []struct {
@@ -472,6 +496,27 @@ func TestLinearTaskManagerConfigValidate(t *testing.T) {
 				cfg.ReadyToCodeStateID = " "
 			},
 			wantErr: "LINEAR_STATE_READY_TO_CODE_ID",
+		},
+		{
+			name: "missing proposing in progress state",
+			mutate: func(cfg *LinearTaskManagerConfig) {
+				cfg.ProposingInProgressStateID = " "
+			},
+			wantErr: "LINEAR_STATE_PROPOSING_IN_PROGRESS_ID",
+		},
+		{
+			name: "missing code in progress state",
+			mutate: func(cfg *LinearTaskManagerConfig) {
+				cfg.CodeInProgressStateID = " "
+			},
+			wantErr: "LINEAR_STATE_CODE_IN_PROGRESS_ID",
+		},
+		{
+			name: "missing archiving in progress state",
+			mutate: func(cfg *LinearTaskManagerConfig) {
+				cfg.ArchivingInProgressStateID = " "
+			},
+			wantErr: "LINEAR_STATE_ARCHIVING_IN_PROGRESS_ID",
 		},
 		{
 			name: "missing proposal review state",
@@ -509,15 +554,47 @@ func TestLinearTaskManagerConfigValidate(t *testing.T) {
 
 func TestLinearTaskManagerConfigManagedStatesDeduplicatesAndTrims(t *testing.T) {
 	cfg := LinearTaskManagerConfig{
-		ReadyToProposeStateID: " state-propose ",
-		ReadyToCodeStateID:    "state-code",
-		ReadyToArchiveStateID: "state-propose",
+		ReadyToProposeStateID:      " state-propose ",
+		ReadyToCodeStateID:         "state-code",
+		ReadyToArchiveStateID:      "state-propose",
+		ProposingInProgressStateID: "state-proposing-progress",
+		CodeInProgressStateID:      "state-code-progress",
+		ArchivingInProgressStateID: "state-archiving-progress",
 	}
 
 	got := cfg.ManagedStateIDs()
 	want := []string{"state-propose", "state-code"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("ManagedStateIDs() = %#v, want %#v", got, want)
+	}
+}
+
+func TestLinearTaskManagerConfigManagedStatesExcludeInProgressStates(t *testing.T) {
+	cfg := LinearTaskManagerConfig{
+		ReadyToProposeStateID:      "state-propose",
+		ReadyToCodeStateID:         "state-code",
+		ReadyToArchiveStateID:      "state-archive",
+		ProposingInProgressStateID: "state-proposing-progress",
+		CodeInProgressStateID:      "state-code-progress",
+		ArchivingInProgressStateID: "state-archiving-progress",
+	}
+
+	got := cfg.ManagedStateIDs()
+	want := []string{"state-propose", "state-code", "state-archive"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("ManagedStateIDs() = %#v, want %#v", got, want)
+	}
+
+	for _, forbidden := range []string{
+		cfg.ProposingInProgressStateID,
+		cfg.CodeInProgressStateID,
+		cfg.ArchivingInProgressStateID,
+	} {
+		for _, stateID := range got {
+			if stateID == forbidden {
+				t.Fatalf("ManagedStateIDs() includes in-progress state %q in %#v", forbidden, got)
+			}
+		}
 	}
 }
 

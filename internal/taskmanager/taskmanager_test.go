@@ -102,6 +102,55 @@ func TestManagerMoveTaskUsesConfiguredReviewStateIDs(t *testing.T) {
 	}
 }
 
+func TestManagerMoveTaskUsesConfiguredInProgressStateIDs(t *testing.T) {
+	tests := []struct {
+		name    string
+		stateID func(config.LinearTaskManagerConfig) string
+	}{
+		{
+			name: "proposing in progress",
+			stateID: func(cfg config.LinearTaskManagerConfig) string {
+				return cfg.ProposingInProgressStateID
+			},
+		},
+		{
+			name: "code in progress",
+			stateID: func(cfg config.LinearTaskManagerConfig) string {
+				return cfg.CodeInProgressStateID
+			},
+		},
+		{
+			name: "archiving in progress",
+			stateID: func(cfg config.LinearTaskManagerConfig) string {
+				return cfg.ArchivingInProgressStateID
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := &recordingClient{}
+			cfg := validConfig()
+			manager := &Manager{
+				Config: cfg,
+				Client: fake,
+			}
+
+			targetStateID := tt.stateID(cfg)
+			if err := manager.MoveTask(context.Background(), "issue-1", targetStateID); err != nil {
+				t.Fatalf("MoveTask() returned error: %v", err)
+			}
+
+			if fake.moveTaskID != "issue-1" {
+				t.Fatalf("moveTaskID = %q, want %q", fake.moveTaskID, "issue-1")
+			}
+			if fake.moveStateID != targetStateID {
+				t.Fatalf("moveStateID = %q, want %q", fake.moveStateID, targetStateID)
+			}
+		})
+	}
+}
+
 func TestManagerAddPRRejectsInvalidURL(t *testing.T) {
 	manager := &Manager{
 		Config: validConfig(),
@@ -218,14 +267,17 @@ func assertTaskManagerLog(t *testing.T, events []taskManagerEvent, module string
 
 func validConfig() config.LinearTaskManagerConfig {
 	return config.LinearTaskManagerConfig{
-		APIURL:                    "https://api.linear.app/graphql",
-		APIToken:                  "linear-token",
-		ProjectID:                 "project-123",
-		ReadyToProposeStateID:     "state-propose",
-		ReadyToCodeStateID:        "state-code",
-		ReadyToArchiveStateID:     "state-archive",
-		NeedProposalReviewStateID: "state-proposal-review",
-		NeedCodeReviewStateID:     "state-code-review",
-		NeedArchiveReviewStateID:  "state-archive-review",
+		APIURL:                     "https://api.linear.app/graphql",
+		APIToken:                   "linear-token",
+		ProjectID:                  "project-123",
+		ReadyToProposeStateID:      "state-propose",
+		ReadyToCodeStateID:         "state-code",
+		ReadyToArchiveStateID:      "state-archive",
+		ProposingInProgressStateID: "state-proposing-progress",
+		CodeInProgressStateID:      "state-code-progress",
+		ArchivingInProgressStateID: "state-archiving-progress",
+		NeedProposalReviewStateID:  "state-proposal-review",
+		NeedCodeReviewStateID:      "state-code-review",
+		NeedArchiveReviewStateID:   "state-archive-review",
 	}
 }

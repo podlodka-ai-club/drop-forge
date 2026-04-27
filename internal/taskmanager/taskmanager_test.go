@@ -14,8 +14,12 @@ import (
 func TestManagerGetTasksLogsProjectAndStateContext(t *testing.T) {
 	var logs bytes.Buffer
 	manager := &Manager{
-		Config:    validConfig(),
-		Client:    fakeClient{tasks: []Task{{ID: "issue-1", Identifier: "ENG-1"}}},
+		Config: validConfig(),
+		Client: fakeClient{tasks: []Task{{
+			ID:           "issue-1",
+			Identifier:   "ENG-1",
+			PullRequests: []PullRequest{{URL: "https://github.com/example/repo/pull/1"}},
+		}}},
 		LogWriter: &logs,
 	}
 
@@ -25,6 +29,9 @@ func TestManagerGetTasksLogsProjectAndStateContext(t *testing.T) {
 	}
 	if len(tasks) != 1 {
 		t.Fatalf("tasks len = %d, want 1", len(tasks))
+	}
+	if len(tasks[0].PullRequests) != 1 || tasks[0].PullRequests[0].URL != "https://github.com/example/repo/pull/1" {
+		t.Fatalf("pull requests = %#v", tasks[0].PullRequests)
 	}
 
 	events := decodeTaskManagerEvents(t, logs.String())

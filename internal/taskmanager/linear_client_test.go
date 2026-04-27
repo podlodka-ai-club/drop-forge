@@ -64,6 +64,9 @@ func TestLinearClientGetTasksFiltersProjectAndStateAndLoadsComments(t *testing.T
 	if tasks[0].Comments[0].Body != "Need revision" {
 		t.Fatalf("first task comments = %#v", tasks[0].Comments)
 	}
+	if tasks[0].PullRequests == nil || len(tasks[0].PullRequests) != 0 {
+		t.Fatalf("first task pull requests = %#v, want empty slice", tasks[0].PullRequests)
+	}
 	if tasks[1].Description != "" {
 		t.Fatalf("second task description = %q, want empty string", tasks[1].Description)
 	}
@@ -86,11 +89,61 @@ func TestLinearClientGetTasksFiltersProjectAndStateAndLoadsComments(t *testing.T
 		t.Fatalf("projectId variable = %#v", got)
 	}
 	assertStringSliceVariable(t, firstReq.Variables["stateIds"], []string{"state-1", "state-2"})
+	if !strings.Contains(firstReq.Query, "attachments(first: 50)") || !strings.Contains(firstReq.Query, "url") {
+		t.Fatalf("managed issues query must request attachments with urls:\n%s", firstReq.Query)
+	}
 
 	events := decodeTaskManagerEvents(t, logs.String())
 	assertTaskManagerLog(t, events, "linear", "query managed issues project=project-123 state_ids=state-1,state-2")
 	assertTaskManagerLog(t, events, "linear", "query comments task=issue-1")
 	assertTaskManagerLog(t, events, "linear", "fetched 2 managed issues project=project-123")
+}
+
+func TestLinearClientGetTasksReturnsPullRequestAttachments(t *testing.T) {
+	httpClient := &scriptedHTTPClient{
+		responses: []scriptedResponse{
+			{
+				body: `{"data":{"issues":{"nodes":[
+					{"id":"issue-1","identifier":"ENG-1","title":"Ready to code","description":"desc","project":{"id":"project-123"},"state":{"id":"state-code","name":"Ready to Code"},"attachments":{"nodes":[
+						{"id":"attachment-2","title":"Pull Request","url":"https://github.com/example/repo/pull/12"},
+						{"id":"attachment-1","title":"Pull Request","url":"https://github.com/example/repo/pull/2"},
+						{"id":"attachment-3","title":"Design","url":"https://example.com/design"},
+						{"id":"attachment-4","title":"Pull Request","url":"  "}
+					]}},
+					{"id":"issue-2","identifier":"ENG-2","title":"No PR","description":"desc","project":{"id":"project-123"},"state":{"id":"state-code","name":"Ready to Code"},"attachments":{"nodes":[]}}
+				],"pageInfo":{"hasNextPage":false,"endCursor":""}}}}`,
+			},
+			{
+				body: `{"data":{"issue":{"comments":{"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":""}}}}}`,
+			},
+			{
+				body: `{"data":{"issue":{"comments":{"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":""}}}}}`,
+			},
+		},
+	}
+	client := &LinearClient{
+		Config:     validConfig(),
+		HTTPClient: httpClient,
+	}
+
+	tasks, err := client.GetTasks(context.Background(), "project-123", []string{"state-code"})
+	if err != nil {
+		t.Fatalf("GetTasks() returned error: %v", err)
+	}
+	if len(tasks) != 2 {
+		t.Fatalf("tasks len = %d, want 2", len(tasks))
+	}
+
+	want := []PullRequest{
+		{URL: "https://github.com/example/repo/pull/12"},
+		{URL: "https://github.com/example/repo/pull/2"},
+	}
+	if fmt.Sprintf("%#v", tasks[0].PullRequests) != fmt.Sprintf("%#v", want) {
+		t.Fatalf("PullRequests = %#v, want deterministic %#v", tasks[0].PullRequests, want)
+	}
+	if tasks[1].PullRequests == nil || len(tasks[1].PullRequests) != 0 {
+		t.Fatalf("task without PR PullRequests = %#v, want empty slice", tasks[1].PullRequests)
+	}
 }
 
 func TestLinearClientGetTasksReturnsUpdatedCommentsOnRepeatedFetch(t *testing.T) {

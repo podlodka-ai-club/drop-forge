@@ -14,13 +14,19 @@ import (
 )
 
 type Task struct {
-	ID          string
-	Identifier  string
-	Title       string
-	Description string
-	ProjectID   string
-	State       WorkflowState
-	Comments    []Comment
+	ID           string
+	Identifier   string
+	Title        string
+	Description  string
+	ProjectID    string
+	State        WorkflowState
+	Comments     []Comment
+	PullRequests []PullRequest
+}
+
+type PullRequest struct {
+	URL    string
+	Branch string
 }
 
 type WorkflowState struct {

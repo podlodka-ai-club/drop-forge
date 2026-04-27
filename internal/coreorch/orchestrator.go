@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"orchv3/internal/applyrunner"
 	"orchv3/internal/proposalrunner"
 	"orchv3/internal/steplog"
 	"orchv3/internal/taskmanager"
@@ -24,16 +25,24 @@ type ProposalRunner interface {
 	Run(ctx context.Context, input proposalrunner.ProposalInput) (string, error)
 }
 
+type ApplyRunner interface {
+	Run(ctx context.Context, input applyrunner.ApplyInput) error
+}
+
 type Config struct {
 	ReadyToProposeStateID      string
 	ProposingInProgressStateID string
 	NeedProposalReviewStateID  string
+	ReadyToCodeStateID         string
+	CodeInProgressStateID      string
+	NeedCodeReviewStateID      string
 }
 
 type Orchestrator struct {
 	Config         Config
 	TaskManager    TaskManager
 	ProposalRunner ProposalRunner
+	ApplyRunner    ApplyRunner
 	Service        string
 	LogWriter      io.Writer
 }
@@ -52,9 +61,21 @@ func (orch *Orchestrator) RunProposalsOnce(ctx context.Context) error {
 		return fmt.Errorf("load managed tasks: %w", err)
 	}
 
-	readyCount := 0
+	proposalCount := 0
+	applyCount := 0
 	for _, task := range tasks {
-		if task.State.ID != orch.Config.ReadyToProposeStateID {
+		switch task.State.ID {
+		case orch.Config.ReadyToProposeStateID:
+			proposalCount++
+			if err := orch.processProposalTask(ctx, logger, task); err != nil {
+				return err
+			}
+		case orch.Config.ReadyToCodeStateID:
+			applyCount++
+			if err := orch.processApplyTask(ctx, logger, task); err != nil {
+				return err
+			}
+		default:
 			logger.Infof(
 				module,
 				"skip task=%s identifier=%s state=%s",
@@ -62,17 +83,14 @@ func (orch *Orchestrator) RunProposalsOnce(ctx context.Context) error {
 				task.Identifier,
 				task.State.ID,
 			)
-			continue
-		}
-
-		readyCount++
-		if err := orch.processTask(ctx, logger, task); err != nil {
-			return err
 		}
 	}
 
-	if readyCount == 0 {
+	if proposalCount == 0 {
 		logger.Infof(module, "no ready-to-propose tasks found")
+	}
+	if applyCount == 0 {
+		logger.Infof(module, "no ready-to-code tasks found")
 	}
 
 	return nil
@@ -100,9 +118,9 @@ func (orch *Orchestrator) runProposalsLoop(ctx context.Context, interval time.Du
 			return nil
 		}
 
-		logger.Infof(module, "proposal monitor iteration start iteration=%d", iteration)
+		logger.Infof(module, "orchestration monitor iteration start iteration=%d", iteration)
 		if err := orch.RunProposalsOnce(ctx); err != nil {
-			logger.Errorf(module, "proposal monitor iteration error iteration=%d: %v", iteration, err)
+			logger.Errorf(module, "orchestration monitor iteration error iteration=%d: %v", iteration, err)
 		}
 
 		if err := wait(ctx, interval); err != nil {
@@ -110,12 +128,12 @@ func (orch *Orchestrator) runProposalsLoop(ctx context.Context, interval time.Du
 				logger.Infof(module, "proposal monitor stopped: %v", ctx.Err())
 				return nil
 			}
-			return fmt.Errorf("wait proposal poll interval: %w", err)
+			return fmt.Errorf("wait orchestration poll interval: %w", err)
 		}
 	}
 }
 
-func (orch *Orchestrator) processTask(ctx context.Context, logger steplog.Logger, task taskmanager.Task) error {
+func (orch *Orchestrator) processProposalTask(ctx context.Context, logger steplog.Logger, task taskmanager.Task) error {
 	taskRef := taskReference(task)
 	logger.Infof(module, "process proposal task=%s identifier=%s", task.ID, task.Identifier)
 
@@ -145,6 +163,35 @@ func (orch *Orchestrator) processTask(ctx context.Context, logger steplog.Logger
 	return nil
 }
 
+func (orch *Orchestrator) processApplyTask(ctx context.Context, logger steplog.Logger, task taskmanager.Task) error {
+	taskRef := taskReference(task)
+	logger.Infof(module, "process apply task=%s identifier=%s", task.ID, task.Identifier)
+
+	applyInput, err := BuildApplyInput(task)
+	if err != nil {
+		logger.Errorf(module, "build apply input %s: %v", taskRef, err)
+		return fmt.Errorf("process apply %s: build apply input: %w", taskRef, err)
+	}
+
+	if err := orch.TaskManager.MoveTask(ctx, task.ID, orch.Config.CodeInProgressStateID); err != nil {
+		logger.Errorf(module, "move apply task %s state=%s: %v", taskRef, orch.Config.CodeInProgressStateID, err)
+		return fmt.Errorf("process apply %s: move to code in-progress state %s: %w", taskRef, orch.Config.CodeInProgressStateID, err)
+	}
+
+	if err := orch.ApplyRunner.Run(ctx, applyInput); err != nil {
+		logger.Errorf(module, "run apply %s: %v", taskRef, err)
+		return fmt.Errorf("process apply %s: run apply: %w", taskRef, err)
+	}
+
+	if err := orch.TaskManager.MoveTask(ctx, task.ID, orch.Config.NeedCodeReviewStateID); err != nil {
+		logger.Errorf(module, "move apply task %s state=%s: %v", taskRef, orch.Config.NeedCodeReviewStateID, err)
+		return fmt.Errorf("process apply %s: move to code review state %s: %w", taskRef, orch.Config.NeedCodeReviewStateID, err)
+	}
+
+	logger.Infof(module, "processed apply task=%s identifier=%s", task.ID, task.Identifier)
+	return nil
+}
+
 func BuildProposalInput(task taskmanager.Task) proposalrunner.ProposalInput {
 	title := strings.TrimSpace(task.Title)
 	if title == "" {
@@ -156,6 +203,39 @@ func BuildProposalInput(task taskmanager.Task) proposalrunner.ProposalInput {
 		Identifier:  strings.TrimSpace(task.Identifier),
 		AgentPrompt: buildAgentPrompt(task),
 	}
+}
+
+func BuildApplyInput(task taskmanager.Task) (applyrunner.ApplyInput, error) {
+	title := strings.TrimSpace(task.Title)
+	if title == "" {
+		title = "Untitled task"
+	}
+
+	var prURL string
+	var branchName string
+	for _, pullRequest := range task.PullRequests {
+		if branchName == "" {
+			branchName = strings.TrimSpace(pullRequest.Branch)
+		}
+		if prURL == "" {
+			prURL = strings.TrimSpace(pullRequest.URL)
+		}
+		if branchName != "" || prURL != "" {
+			break
+		}
+	}
+	if branchName == "" && prURL == "" {
+		return applyrunner.ApplyInput{}, fmt.Errorf("pull request branch source is missing")
+	}
+
+	return applyrunner.ApplyInput{
+		TaskID:      strings.TrimSpace(task.ID),
+		Identifier:  strings.TrimSpace(task.Identifier),
+		Title:       title,
+		AgentPrompt: buildAgentPrompt(task),
+		PRURL:       prURL,
+		BranchName:  branchName,
+	}, nil
 }
 
 func buildAgentPrompt(task taskmanager.Task) string {
@@ -212,6 +292,9 @@ func (orch *Orchestrator) validate() error {
 	if orch.ProposalRunner == nil {
 		return fmt.Errorf("proposal runner must not be nil")
 	}
+	if orch.ApplyRunner == nil {
+		return fmt.Errorf("apply runner must not be nil")
+	}
 	if strings.TrimSpace(orch.Config.ReadyToProposeStateID) == "" {
 		return fmt.Errorf("ready-to-propose state id must not be empty")
 	}
@@ -220,6 +303,15 @@ func (orch *Orchestrator) validate() error {
 	}
 	if strings.TrimSpace(orch.Config.NeedProposalReviewStateID) == "" {
 		return fmt.Errorf("need-proposal-review state id must not be empty")
+	}
+	if strings.TrimSpace(orch.Config.ReadyToCodeStateID) == "" {
+		return fmt.Errorf("ready-to-code state id must not be empty")
+	}
+	if strings.TrimSpace(orch.Config.CodeInProgressStateID) == "" {
+		return fmt.Errorf("code-in-progress state id must not be empty")
+	}
+	if strings.TrimSpace(orch.Config.NeedCodeReviewStateID) == "" {
+		return fmt.Errorf("need-code-review state id must not be empty")
 	}
 
 	return nil

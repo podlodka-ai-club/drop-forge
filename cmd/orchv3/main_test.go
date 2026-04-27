@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"orchv3/internal/applyrunner"
 	"orchv3/internal/config"
 	"orchv3/internal/coreorch"
 	"orchv3/internal/proposalrunner"
@@ -60,7 +61,7 @@ func TestRunWithoutTaskStartsProposalMonitor(t *testing.T) {
 	var stderr bytes.Buffer
 	deps := testDeps()
 	monitor := &fakeProposalMonitor{}
-	deps.newProposalOrchestrator = func(cfg config.Config, tasks coreorch.TaskManager, runner coreorch.ProposalRunner, logOut io.Writer) proposalMonitor {
+	deps.newProposalOrchestrator = func(cfg config.Config, tasks coreorch.TaskManager, proposalRunner coreorch.ProposalRunner, applyRunner coreorch.ApplyRunner, logOut io.Writer) proposalMonitor {
 		return monitor
 	}
 
@@ -79,7 +80,7 @@ func TestRunWithoutTaskStartsProposalMonitor(t *testing.T) {
 	if event.Type != "info" {
 		t.Fatalf("type = %q, want %q", event.Type, "info")
 	}
-	if !strings.Contains(event.Message, "orchv3-test starting proposal monitor") {
+	if !strings.Contains(event.Message, "orchv3-test starting orchestration monitor") {
 		t.Fatalf("message = %q, want startup message", event.Message)
 	}
 	if monitor.calls != 1 {
@@ -130,11 +131,18 @@ func TestRunDefaultWiresDependenciesAndKeepsStdoutEmpty(t *testing.T) {
 		state.runnerLogOut = logOut
 		return &fakeSingleProposalRunner{prURL: "https://github.com/example/repo/pull/1"}
 	}
-	deps.newProposalOrchestrator = func(cfg config.Config, tasks coreorch.TaskManager, runner coreorch.ProposalRunner, logOut io.Writer) proposalMonitor {
+	deps.newApplyRunner = func(cfg config.ProposalRunnerConfig, service string, logOut io.Writer) singleApplyRunner {
+		state.applyRunnerConfig = cfg
+		state.applyRunnerService = service
+		state.applyRunnerLogOut = logOut
+		return &fakeSingleApplyRunner{}
+	}
+	deps.newProposalOrchestrator = func(cfg config.Config, tasks coreorch.TaskManager, proposalRunner coreorch.ProposalRunner, applyRunner coreorch.ApplyRunner, logOut io.Writer) proposalMonitor {
 		state.orchestratorConfig = cfg
 		state.orchestratorLogOut = logOut
 		state.orchestratorTaskManager = tasks
-		state.orchestratorRunner = runner
+		state.orchestratorRunner = proposalRunner
+		state.orchestratorApplyRunner = applyRunner
 		return &fakeProposalMonitor{}
 	}
 
@@ -154,38 +162,66 @@ func TestRunDefaultWiresDependenciesAndKeepsStdoutEmpty(t *testing.T) {
 	if state.runnerService != "orchv3-test" {
 		t.Fatalf("runner service = %q", state.runnerService)
 	}
+	if state.applyRunnerConfig.RepositoryURL != "git@github.com:example/repo.git" {
+		t.Fatalf("apply runner repository = %q", state.applyRunnerConfig.RepositoryURL)
+	}
+	if state.applyRunnerService != "orchv3-test" {
+		t.Fatalf("apply runner service = %q", state.applyRunnerService)
+	}
 	if state.orchestratorConfig.TaskManager.ReadyToProposeStateID != "state-propose" {
 		t.Fatalf("orchestrator ready state = %q", state.orchestratorConfig.TaskManager.ReadyToProposeStateID)
 	}
 	if state.orchestratorConfig.TaskManager.ProposingInProgressStateID != "state-proposing-progress" {
 		t.Fatalf("orchestrator proposing in-progress state = %q", state.orchestratorConfig.TaskManager.ProposingInProgressStateID)
 	}
-	if state.taskManagerLogOut == nil || state.runnerLogOut == nil || state.orchestratorLogOut == nil {
+	if state.orchestratorConfig.TaskManager.CodeInProgressStateID != "state-code-progress" {
+		t.Fatalf("orchestrator code in-progress state = %q", state.orchestratorConfig.TaskManager.CodeInProgressStateID)
+	}
+	if state.orchestratorConfig.TaskManager.NeedCodeReviewStateID != "state-code-review" {
+		t.Fatalf("orchestrator need code review state = %q", state.orchestratorConfig.TaskManager.NeedCodeReviewStateID)
+	}
+	if state.taskManagerLogOut == nil || state.runnerLogOut == nil || state.applyRunnerLogOut == nil || state.orchestratorLogOut == nil {
 		t.Fatal("log outputs should be wired")
 	}
-	if state.orchestratorTaskManager == nil || state.orchestratorRunner == nil {
+	if state.orchestratorTaskManager == nil || state.orchestratorRunner == nil || state.orchestratorApplyRunner == nil {
 		t.Fatal("orchestrator dependencies should be wired")
 	}
 }
 
-func TestDefaultProposalOrchestratorWiresProposingInProgressState(t *testing.T) {
+func TestDefaultProposalOrchestratorWiresApplyStates(t *testing.T) {
 	cfg := config.Config{
 		AppName: "orchv3-test",
 		TaskManager: config.LinearTaskManagerConfig{
 			ReadyToProposeStateID:      "state-propose",
+			ReadyToCodeStateID:         "state-code",
 			ProposingInProgressStateID: "state-proposing-progress",
+			CodeInProgressStateID:      "state-code-progress",
 			NeedProposalReviewStateID:  "state-proposal-review",
+			NeedCodeReviewStateID:      "state-code-review",
 		},
 	}
 	tasks := &fakeTaskManager{}
 	runner := &fakeSingleProposalRunner{}
+	apply := &fakeSingleApplyRunner{}
 
-	orchestrator, ok := defaultDeps().newProposalOrchestrator(cfg, tasks, runner, io.Discard).(*coreorch.Orchestrator)
+	orchestrator, ok := defaultDeps().newProposalOrchestrator(cfg, tasks, runner, apply, io.Discard).(*coreorch.Orchestrator)
 	if !ok {
 		t.Fatalf("orchestrator type = %T, want *coreorch.Orchestrator", orchestrator)
 	}
 	if orchestrator.Config.ProposingInProgressStateID != "state-proposing-progress" {
 		t.Fatalf("ProposingInProgressStateID = %q", orchestrator.Config.ProposingInProgressStateID)
+	}
+	if orchestrator.Config.ReadyToCodeStateID != "state-code" {
+		t.Fatalf("ReadyToCodeStateID = %q", orchestrator.Config.ReadyToCodeStateID)
+	}
+	if orchestrator.Config.CodeInProgressStateID != "state-code-progress" {
+		t.Fatalf("CodeInProgressStateID = %q", orchestrator.Config.CodeInProgressStateID)
+	}
+	if orchestrator.Config.NeedCodeReviewStateID != "state-code-review" {
+		t.Fatalf("NeedCodeReviewStateID = %q", orchestrator.Config.NeedCodeReviewStateID)
+	}
+	if orchestrator.ApplyRunner != apply {
+		t.Fatal("apply runner should be wired")
 	}
 }
 
@@ -295,10 +331,14 @@ type cliTestState struct {
 	runnerConfig            config.ProposalRunnerConfig
 	runnerService           string
 	runnerLogOut            io.Writer
+	applyRunnerConfig       config.ProposalRunnerConfig
+	applyRunnerService      string
+	applyRunnerLogOut       io.Writer
 	orchestratorConfig      config.Config
 	orchestratorLogOut      io.Writer
 	orchestratorTaskManager coreorch.TaskManager
 	orchestratorRunner      coreorch.ProposalRunner
+	orchestratorApplyRunner coreorch.ApplyRunner
 }
 
 type fakeSingleProposalRunner struct {
@@ -310,6 +350,16 @@ type fakeSingleProposalRunner struct {
 func (runner *fakeSingleProposalRunner) Run(ctx context.Context, input proposalrunner.ProposalInput) (string, error) {
 	runner.inputs = append(runner.inputs, input)
 	return runner.prURL, runner.err
+}
+
+type fakeSingleApplyRunner struct {
+	inputs []applyrunner.ApplyInput
+	err    error
+}
+
+func (runner *fakeSingleApplyRunner) Run(ctx context.Context, input applyrunner.ApplyInput) error {
+	runner.inputs = append(runner.inputs, input)
+	return runner.err
 }
 
 type fakeTaskManager struct{}
@@ -350,8 +400,11 @@ func testDeps() appDeps {
 				TaskManager: config.LinearTaskManagerConfig{
 					ProjectID:                  "project-123",
 					ReadyToProposeStateID:      "state-propose",
+					ReadyToCodeStateID:         "state-code",
 					ProposingInProgressStateID: "state-proposing-progress",
+					CodeInProgressStateID:      "state-code-progress",
 					NeedProposalReviewStateID:  "state-proposal-review",
+					NeedCodeReviewStateID:      "state-code-review",
 				},
 			}, nil
 		},
@@ -361,10 +414,13 @@ func testDeps() appDeps {
 		newProposalRunner: func(cfg config.ProposalRunnerConfig, service string, logOut io.Writer) singleProposalRunner {
 			return &fakeSingleProposalRunner{}
 		},
+		newApplyRunner: func(cfg config.ProposalRunnerConfig, service string, logOut io.Writer) singleApplyRunner {
+			return &fakeSingleApplyRunner{}
+		},
 		newTaskManager: func(cfg config.LinearTaskManagerConfig, logOut io.Writer) coreorch.TaskManager {
 			return &fakeTaskManager{}
 		},
-		newProposalOrchestrator: func(cfg config.Config, tasks coreorch.TaskManager, runner coreorch.ProposalRunner, logOut io.Writer) proposalMonitor {
+		newProposalOrchestrator: func(cfg config.Config, tasks coreorch.TaskManager, proposalRunner coreorch.ProposalRunner, applyRunner coreorch.ApplyRunner, logOut io.Writer) proposalMonitor {
 			return &fakeProposalMonitor{}
 		},
 	}

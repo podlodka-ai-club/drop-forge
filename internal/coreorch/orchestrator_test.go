@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"orchv3/internal/applyrunner"
+	"orchv3/internal/archiverunner"
 	"orchv3/internal/proposalrunner"
 	"orchv3/internal/taskmanager"
 )
@@ -125,6 +126,40 @@ func TestRunProposalsOnceRoutesProposalAndApplyTasksSequentially(t *testing.T) {
 	}
 }
 
+func TestRunProposalsOnceRoutesProposalApplyAndArchiveTasksSequentially(t *testing.T) {
+	taskManager := &recordingTaskManager{
+		tasks: []taskmanager.Task{
+			readyTask("issue-1", "ENG-1", "Proposal"),
+			readyCodeTask("issue-2", "ENG-2", "Apply", taskmanager.PullRequest{URL: "https://github.com/example/repo/pull/2"}),
+			readyArchiveTask("issue-3", "ENG-3", "Archive", taskmanager.PullRequest{Branch: "codex/proposal/archive"}),
+		},
+	}
+	proposalRunner := &recordingProposalRunner{urls: []string{"https://github.com/example/repo/pull/1"}}
+	applyRunner := &recordingApplyRunner{}
+	archiveRunner := &recordingArchiveRunner{}
+	orch := testOrchestratorWithArchive(taskManager, proposalRunner, applyRunner, archiveRunner, nil)
+
+	if err := orch.RunProposalsOnce(context.Background()); err != nil {
+		t.Fatalf("RunProposalsOnce() returned error: %v", err)
+	}
+
+	if len(proposalRunner.inputs) != 1 {
+		t.Fatalf("proposal inputs len = %d, want 1", len(proposalRunner.inputs))
+	}
+	if len(applyRunner.inputs) != 1 {
+		t.Fatalf("apply inputs len = %d, want 1", len(applyRunner.inputs))
+	}
+	if len(archiveRunner.inputs) != 1 {
+		t.Fatalf("archive inputs len = %d, want 1", len(archiveRunner.inputs))
+	}
+	if archiveRunner.inputs[0].BranchName != "codex/proposal/archive" || archiveRunner.inputs[0].Identifier != "ENG-3" {
+		t.Fatalf("archive input = %#v", archiveRunner.inputs[0])
+	}
+	if got := strings.Join(taskManager.calls, ","); got != "move:issue-1:state-proposing-progress,add-pr:issue-1,move:issue-1:state-proposal-review,move:issue-2:state-code-progress,move:issue-2:state-code-review,move:issue-3:state-archiving-progress,move:issue-3:state-archive-review" {
+		t.Fatalf("mutation calls = %q", got)
+	}
+}
+
 func TestRunProposalsOnceRejectsApplyTaskWithoutBranchSource(t *testing.T) {
 	taskManager := &recordingTaskManager{
 		tasks: []taskmanager.Task{readyCodeTask("issue-1", "ENG-1", "Apply", taskmanager.PullRequest{})},
@@ -144,6 +179,94 @@ func TestRunProposalsOnceRejectsApplyTaskWithoutBranchSource(t *testing.T) {
 	}
 	if len(taskManager.moveTaskIDs) != 0 {
 		t.Fatalf("move calls = %#v, want none", taskManager.moveTaskIDs)
+	}
+}
+
+func TestRunProposalsOnceRejectsArchiveTaskWithoutBranchSource(t *testing.T) {
+	taskManager := &recordingTaskManager{
+		tasks: []taskmanager.Task{readyArchiveTask("issue-1", "ENG-1", "Archive", taskmanager.PullRequest{})},
+	}
+	archiveRunner := &recordingArchiveRunner{}
+	orch := testOrchestratorWithArchive(taskManager, &recordingProposalRunner{}, &recordingApplyRunner{}, archiveRunner, nil)
+
+	err := orch.RunProposalsOnce(context.Background())
+	if err == nil {
+		t.Fatal("RunProposalsOnce() error = nil, want non-nil")
+	}
+	if !strings.Contains(err.Error(), "pull request branch source is missing") {
+		t.Fatalf("error = %q, want branch source context", err.Error())
+	}
+	if len(archiveRunner.inputs) != 0 {
+		t.Fatalf("archive inputs len = %d, want 0", len(archiveRunner.inputs))
+	}
+	if len(taskManager.moveTaskIDs) != 0 {
+		t.Fatalf("move calls = %#v, want none", taskManager.moveTaskIDs)
+	}
+}
+
+func TestRunProposalsOnceArchivingInProgressMoveFailureDoesNotRunArchive(t *testing.T) {
+	taskManager := &recordingTaskManager{
+		tasks: []taskmanager.Task{readyArchiveTask("issue-1", "ENG-1", "Archive", taskmanager.PullRequest{Branch: "feature/task"})},
+		moveErrByStateID: map[string]error{
+			"state-archiving-progress": errors.New("linear move failed"),
+		},
+	}
+	archiveRunner := &recordingArchiveRunner{}
+	orch := testOrchestratorWithArchive(taskManager, &recordingProposalRunner{}, &recordingApplyRunner{}, archiveRunner, nil)
+
+	err := orch.RunProposalsOnce(context.Background())
+	if err == nil {
+		t.Fatal("RunProposalsOnce() error = nil, want non-nil")
+	}
+	if !strings.Contains(err.Error(), "move to archiving in-progress state state-archiving-progress") {
+		t.Fatalf("error = %q, want in-progress move context", err.Error())
+	}
+	if len(archiveRunner.inputs) != 0 {
+		t.Fatalf("archive inputs len = %d, want 0", len(archiveRunner.inputs))
+	}
+	if got := strings.Join(taskManager.moveStateIDs, ","); got != "state-archiving-progress" {
+		t.Fatalf("MoveTask states = %q", got)
+	}
+}
+
+func TestRunProposalsOnceArchiveFailureDoesNotMoveTaskToArchiveReview(t *testing.T) {
+	taskManager := &recordingTaskManager{
+		tasks: []taskmanager.Task{readyArchiveTask("issue-1", "ENG-1", "Archive", taskmanager.PullRequest{Branch: "feature/task"})},
+	}
+	archiveRunner := &recordingArchiveRunner{err: errors.New("archive failed")}
+	orch := testOrchestratorWithArchive(taskManager, &recordingProposalRunner{}, &recordingApplyRunner{}, archiveRunner, nil)
+
+	err := orch.RunProposalsOnce(context.Background())
+	if err == nil {
+		t.Fatal("RunProposalsOnce() error = nil, want non-nil")
+	}
+	if !strings.Contains(err.Error(), "run archive") {
+		t.Fatalf("error = %q, want archive context", err.Error())
+	}
+	if got := strings.Join(taskManager.moveStateIDs, ","); got != "state-archiving-progress" {
+		t.Fatalf("MoveTask states = %q", got)
+	}
+}
+
+func TestRunProposalsOnceArchiveReviewMoveFailureReturnsContext(t *testing.T) {
+	taskManager := &recordingTaskManager{
+		tasks: []taskmanager.Task{readyArchiveTask("issue-1", "ENG-1", "Archive", taskmanager.PullRequest{Branch: "feature/task"})},
+		moveErrByStateID: map[string]error{
+			"state-archive-review": errors.New("linear move failed"),
+		},
+	}
+	archiveRunner := &recordingArchiveRunner{}
+	orch := testOrchestratorWithArchive(taskManager, &recordingProposalRunner{}, &recordingApplyRunner{}, archiveRunner, nil)
+
+	err := orch.RunProposalsOnce(context.Background())
+	if err == nil {
+		t.Fatal("RunProposalsOnce() error = nil, want non-nil")
+	}
+	if !strings.Contains(err.Error(), "move to archive review state state-archive-review") {
+		t.Fatalf("error = %q, want archive review move context", err.Error())
+	}
+	if got := strings.Join(taskManager.moveStateIDs, ","); got != "state-archiving-progress,state-archive-review" {
+		t.Fatalf("MoveTask states = %q", got)
 	}
 }
 
@@ -423,6 +546,44 @@ func TestBuildApplyInputIncludesTaskPayloadAndBranchSource(t *testing.T) {
 	}
 }
 
+func TestBuildArchiveInputIncludesTaskPayloadAndBranchSource(t *testing.T) {
+	task := readyArchiveTask("issue-1", "ENG-1", "Archive flow", taskmanager.PullRequest{
+		URL:    "https://github.com/example/repo/pull/42",
+		Branch: "feature/task",
+	})
+	task.Description = "Archive accepted spec."
+	task.Comments = []taskmanager.Comment{{Body: "Use existing patterns.", User: taskmanager.User{Name: "Dana"}}}
+
+	got, err := BuildArchiveInput(task)
+	if err != nil {
+		t.Fatalf("BuildArchiveInput() error = %v", err)
+	}
+	if got.TaskID != "issue-1" || got.Identifier != "ENG-1" || got.Title != "Archive flow" {
+		t.Fatalf("BuildArchiveInput() = %#v", got)
+	}
+	if got.PRURL != "https://github.com/example/repo/pull/42" || got.BranchName != "feature/task" {
+		t.Fatalf("branch source = pr %q branch %q", got.PRURL, got.BranchName)
+	}
+	if !strings.Contains(got.AgentPrompt, "Comments:") || !strings.Contains(got.AgentPrompt, "Use existing patterns.") {
+		t.Fatalf("agent prompt = %q", got.AgentPrompt)
+	}
+}
+
+func TestBuildArchiveInputHandlesFallbackTitleAndPRURLOnly(t *testing.T) {
+	task := readyArchiveTask("issue-1", "ENG-1", "", taskmanager.PullRequest{URL: "https://github.com/example/repo/pull/42"})
+
+	got, err := BuildArchiveInput(task)
+	if err != nil {
+		t.Fatalf("BuildArchiveInput() error = %v", err)
+	}
+	if got.Title == "" {
+		t.Fatal("BuildArchiveInput().Title must not be empty after fallback")
+	}
+	if got.PRURL != "https://github.com/example/repo/pull/42" || got.BranchName != "" {
+		t.Fatalf("branch source = pr %q branch %q", got.PRURL, got.BranchName)
+	}
+}
+
 func TestRunProposalsOnceRequiresProposingInProgressState(t *testing.T) {
 	taskManager := &recordingTaskManager{}
 	runner := &recordingProposalRunner{}
@@ -583,7 +744,17 @@ type recordingApplyRunner struct {
 	err    error
 }
 
+type recordingArchiveRunner struct {
+	inputs []archiverunner.ArchiveInput
+	err    error
+}
+
 func (runner *recordingApplyRunner) Run(ctx context.Context, input applyrunner.ApplyInput) error {
+	runner.inputs = append(runner.inputs, input)
+	return runner.err
+}
+
+func (runner *recordingArchiveRunner) Run(ctx context.Context, input archiverunner.ArchiveInput) error {
 	runner.inputs = append(runner.inputs, input)
 	return runner.err
 }
@@ -642,6 +813,10 @@ func testOrchestrator(taskManager TaskManager, runner ProposalRunner, logs *byte
 }
 
 func testOrchestratorWithApply(taskManager TaskManager, runner ProposalRunner, applyRunner ApplyRunner, logs *bytes.Buffer) Orchestrator {
+	return testOrchestratorWithArchive(taskManager, runner, applyRunner, &recordingArchiveRunner{}, logs)
+}
+
+func testOrchestratorWithArchive(taskManager TaskManager, runner ProposalRunner, applyRunner ApplyRunner, archiveRunner ArchiveRunner, logs *bytes.Buffer) Orchestrator {
 	var logWriter ioWriter
 	if logs != nil {
 		logWriter = logs
@@ -655,10 +830,14 @@ func testOrchestratorWithApply(taskManager TaskManager, runner ProposalRunner, a
 			ReadyToCodeStateID:         "state-code",
 			CodeInProgressStateID:      "state-code-progress",
 			NeedCodeReviewStateID:      "state-code-review",
+			ReadyToArchiveStateID:      "state-ready-archive",
+			ArchivingInProgressStateID: "state-archiving-progress",
+			NeedArchiveReviewStateID:   "state-archive-review",
 		},
 		TaskManager:    taskManager,
 		ProposalRunner: runner,
 		ApplyRunner:    applyRunner,
+		ArchiveRunner:  archiveRunner,
 		LogWriter:      logWriter,
 	}
 }
@@ -678,6 +857,16 @@ func readyCodeTask(id string, identifier string, title string, pullRequests ...t
 		Identifier:   identifier,
 		Title:        title,
 		State:        taskmanager.WorkflowState{ID: "state-code", Name: "Ready to Code"},
+		PullRequests: pullRequests,
+	}
+}
+
+func readyArchiveTask(id string, identifier string, title string, pullRequests ...taskmanager.PullRequest) taskmanager.Task {
+	return taskmanager.Task{
+		ID:           id,
+		Identifier:   identifier,
+		Title:        title,
+		State:        taskmanager.WorkflowState{ID: "state-ready-archive", Name: "Ready to Archive"},
 		PullRequests: pullRequests,
 	}
 }

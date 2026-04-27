@@ -8,7 +8,7 @@
 
 - читать задачи только из одного настроенного проекта Linear;
 - выбирать только задачи из управляемых state'ов `ready to propose`, `ready to code`, `ready to archive`;
-- возвращать данные задачи в форме, пригодной для `CoreOrch`: `id`, `identifier`, `title`, `description`, текущий `state`, `comments`, attached Pull Request URL для Apply;
+- возвращать данные задачи в форме, пригодной для `CoreOrch`: `id`, `identifier`, `title`, `description`, текущий `state`, `comments`, attached Pull Request URL для Apply и Archive;
 - выполнять write-операции обратно в Linear: `MoveTask`, `AddComment`, `AddPR`.
 
 Для review-этапов `TaskManager` не выбирает target state сам. `CoreOrch` должен взять нужный review state ID из конфига и явно вызвать `MoveTask(...)`, например для:
@@ -28,7 +28,7 @@
 - orchestration retry / lease / locking;
 - получение branch name из GitHub metadata.
 
-Branch name для Apply при необходимости определяет Apply runner через `gh pr view` по attached PR URL.
+Branch name для Apply и Archive при необходимости определяют stage-specific runner'ы через `gh pr view` по attached PR URL.
 
 ## Конфигурация
 

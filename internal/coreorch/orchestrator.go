@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"orchv3/internal/applyrunner"
+	"orchv3/internal/archiverunner"
 	"orchv3/internal/proposalrunner"
 	"orchv3/internal/steplog"
 	"orchv3/internal/taskmanager"
@@ -29,6 +30,10 @@ type ApplyRunner interface {
 	Run(ctx context.Context, input applyrunner.ApplyInput) error
 }
 
+type ArchiveRunner interface {
+	Run(ctx context.Context, input archiverunner.ArchiveInput) error
+}
+
 type Config struct {
 	ReadyToProposeStateID      string
 	ProposingInProgressStateID string
@@ -36,6 +41,9 @@ type Config struct {
 	ReadyToCodeStateID         string
 	CodeInProgressStateID      string
 	NeedCodeReviewStateID      string
+	ReadyToArchiveStateID      string
+	ArchivingInProgressStateID string
+	NeedArchiveReviewStateID   string
 }
 
 type Orchestrator struct {
@@ -43,6 +51,7 @@ type Orchestrator struct {
 	TaskManager    TaskManager
 	ProposalRunner ProposalRunner
 	ApplyRunner    ApplyRunner
+	ArchiveRunner  ArchiveRunner
 	Service        string
 	LogWriter      io.Writer
 }
@@ -63,6 +72,7 @@ func (orch *Orchestrator) RunProposalsOnce(ctx context.Context) error {
 
 	proposalCount := 0
 	applyCount := 0
+	archiveCount := 0
 	for _, task := range tasks {
 		switch task.State.ID {
 		case orch.Config.ReadyToProposeStateID:
@@ -73,6 +83,11 @@ func (orch *Orchestrator) RunProposalsOnce(ctx context.Context) error {
 		case orch.Config.ReadyToCodeStateID:
 			applyCount++
 			if err := orch.processApplyTask(ctx, logger, task); err != nil {
+				return err
+			}
+		case orch.Config.ReadyToArchiveStateID:
+			archiveCount++
+			if err := orch.processArchiveTask(ctx, logger, task); err != nil {
 				return err
 			}
 		default:
@@ -91,6 +106,9 @@ func (orch *Orchestrator) RunProposalsOnce(ctx context.Context) error {
 	}
 	if applyCount == 0 {
 		logger.Infof(module, "no ready-to-code tasks found")
+	}
+	if archiveCount == 0 {
+		logger.Infof(module, "no ready-to-archive tasks found")
 	}
 
 	return nil
@@ -192,6 +210,35 @@ func (orch *Orchestrator) processApplyTask(ctx context.Context, logger steplog.L
 	return nil
 }
 
+func (orch *Orchestrator) processArchiveTask(ctx context.Context, logger steplog.Logger, task taskmanager.Task) error {
+	taskRef := taskReference(task)
+	logger.Infof(module, "process archive task=%s identifier=%s", task.ID, task.Identifier)
+
+	archiveInput, err := BuildArchiveInput(task)
+	if err != nil {
+		logger.Errorf(module, "build archive input %s: %v", taskRef, err)
+		return fmt.Errorf("process archive %s: build archive input: %w", taskRef, err)
+	}
+
+	if err := orch.TaskManager.MoveTask(ctx, task.ID, orch.Config.ArchivingInProgressStateID); err != nil {
+		logger.Errorf(module, "move archive task %s state=%s: %v", taskRef, orch.Config.ArchivingInProgressStateID, err)
+		return fmt.Errorf("process archive %s: move to archiving in-progress state %s: %w", taskRef, orch.Config.ArchivingInProgressStateID, err)
+	}
+
+	if err := orch.ArchiveRunner.Run(ctx, archiveInput); err != nil {
+		logger.Errorf(module, "run archive %s: %v", taskRef, err)
+		return fmt.Errorf("process archive %s: run archive: %w", taskRef, err)
+	}
+
+	if err := orch.TaskManager.MoveTask(ctx, task.ID, orch.Config.NeedArchiveReviewStateID); err != nil {
+		logger.Errorf(module, "move archive task %s state=%s: %v", taskRef, orch.Config.NeedArchiveReviewStateID, err)
+		return fmt.Errorf("process archive %s: move to archive review state %s: %w", taskRef, orch.Config.NeedArchiveReviewStateID, err)
+	}
+
+	logger.Infof(module, "processed archive task=%s identifier=%s", task.ID, task.Identifier)
+	return nil
+}
+
 func BuildProposalInput(task taskmanager.Task) proposalrunner.ProposalInput {
 	title := strings.TrimSpace(task.Title)
 	if title == "" {
@@ -211,19 +258,7 @@ func BuildApplyInput(task taskmanager.Task) (applyrunner.ApplyInput, error) {
 		title = "Untitled task"
 	}
 
-	var prURL string
-	var branchName string
-	for _, pullRequest := range task.PullRequests {
-		if branchName == "" {
-			branchName = strings.TrimSpace(pullRequest.Branch)
-		}
-		if prURL == "" {
-			prURL = strings.TrimSpace(pullRequest.URL)
-		}
-		if branchName != "" || prURL != "" {
-			break
-		}
-	}
+	prURL, branchName := branchSource(task.PullRequests)
 	if branchName == "" && prURL == "" {
 		return applyrunner.ApplyInput{}, fmt.Errorf("pull request branch source is missing")
 	}
@@ -236,6 +271,45 @@ func BuildApplyInput(task taskmanager.Task) (applyrunner.ApplyInput, error) {
 		PRURL:       prURL,
 		BranchName:  branchName,
 	}, nil
+}
+
+func BuildArchiveInput(task taskmanager.Task) (archiverunner.ArchiveInput, error) {
+	title := strings.TrimSpace(task.Title)
+	if title == "" {
+		title = "Untitled task"
+	}
+
+	prURL, branchName := branchSource(task.PullRequests)
+	if branchName == "" && prURL == "" {
+		return archiverunner.ArchiveInput{}, fmt.Errorf("pull request branch source is missing")
+	}
+
+	return archiverunner.ArchiveInput{
+		TaskID:      strings.TrimSpace(task.ID),
+		Identifier:  strings.TrimSpace(task.Identifier),
+		Title:       title,
+		AgentPrompt: buildAgentPrompt(task),
+		PRURL:       prURL,
+		BranchName:  branchName,
+	}, nil
+}
+
+func branchSource(pullRequests []taskmanager.PullRequest) (string, string) {
+	var prURL string
+	var branchName string
+	for _, pullRequest := range pullRequests {
+		if branchName == "" {
+			branchName = strings.TrimSpace(pullRequest.Branch)
+		}
+		if prURL == "" {
+			prURL = strings.TrimSpace(pullRequest.URL)
+		}
+		if branchName != "" || prURL != "" {
+			break
+		}
+	}
+
+	return prURL, branchName
 }
 
 func buildAgentPrompt(task taskmanager.Task) string {
@@ -295,6 +369,9 @@ func (orch *Orchestrator) validate() error {
 	if orch.ApplyRunner == nil {
 		return fmt.Errorf("apply runner must not be nil")
 	}
+	if orch.ArchiveRunner == nil {
+		return fmt.Errorf("archive runner must not be nil")
+	}
 	if strings.TrimSpace(orch.Config.ReadyToProposeStateID) == "" {
 		return fmt.Errorf("ready-to-propose state id must not be empty")
 	}
@@ -312,6 +389,15 @@ func (orch *Orchestrator) validate() error {
 	}
 	if strings.TrimSpace(orch.Config.NeedCodeReviewStateID) == "" {
 		return fmt.Errorf("need-code-review state id must not be empty")
+	}
+	if strings.TrimSpace(orch.Config.ReadyToArchiveStateID) == "" {
+		return fmt.Errorf("ready-to-archive state id must not be empty")
+	}
+	if strings.TrimSpace(orch.Config.ArchivingInProgressStateID) == "" {
+		return fmt.Errorf("archiving-in-progress state id must not be empty")
+	}
+	if strings.TrimSpace(orch.Config.NeedArchiveReviewStateID) == "" {
+		return fmt.Errorf("need-archive-review state id must not be empty")
 	}
 
 	return nil

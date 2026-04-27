@@ -68,7 +68,7 @@ The system SHALL create a unique temporary directory for each run, clone the con
 - **THEN** the system logs the clone output and returns an error that identifies the clone step
 
 ### Requirement: Codex CLI openspec propose execution
-The system SHALL execute the OpenSpec proposal generation step through an internal `AgentExecutor` contract. The default implementation SHALL remain Codex CLI and SHALL preserve the current local non-interactive command format `codex exec --json --sandbox danger-full-access --output-last-message <path> --cd <clone-dir> -`, with the prompt passed through stdin. The prompt SHALL be the `AgentPrompt` field of the `ProposalInput`, which already contains the `openspec-propose` skill instruction plus the original task context.
+The system SHALL execute the OpenSpec proposal generation step through an internal `AgentExecutor` contract. The default implementation SHALL remain Codex CLI and SHALL preserve the current local non-interactive command format `codex exec --json --sandbox danger-full-access --output-last-message <path> --cd <clone-dir> -`, with the prompt passed through stdin. The proposal runner SHALL pass the `AgentPrompt` field of the `ProposalInput` to the configured `AgentExecutor`; the default Codex CLI implementation SHALL wrap that task context in the `openspec-propose` skill instruction before invoking Codex.
 
 #### Scenario: Agent executor receives proposal task
 - **WHEN** the workflow reaches the agent proposal step
@@ -76,7 +76,7 @@ The system SHALL execute the OpenSpec proposal generation step through an intern
 
 #### Scenario: Codex executor receives prompt
 - **WHEN** the configured `AgentExecutor` is the default Codex CLI implementation
-- **THEN** the Codex executor logs the prompt and invokes `codex exec --json --sandbox danger-full-access --output-last-message <path> --cd <clone-dir> -` with the `AgentPrompt` on stdin
+- **THEN** the Codex executor logs the prompt and invokes `codex exec --json --sandbox danger-full-access --output-last-message <path> --cd <clone-dir> -` with a prompt that contains the `openspec-propose` instruction and the `AgentPrompt` task context on stdin
 
 #### Scenario: Agent executor succeeds
 - **WHEN** the `AgentExecutor` exits successfully after creating OpenSpec artifacts
@@ -185,4 +185,3 @@ The repository SHALL include a test that exercises `coreorch.BuildProposalInput`
 #### Scenario: Contract test fails on regression
 - **WHEN** a developer changes either `BuildProposalInput` or the runner's metadata-derivation logic in a way that drops `Title` or `Identifier` from the PR title
 - **THEN** the test reports a failure that names both the produced and expected PR title
-

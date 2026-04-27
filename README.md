@@ -11,7 +11,7 @@
 - запустить proposal workflow во внешнем репозитории через `AgentExecutor`;
 - вывести итоговый PR URL direct proposal-runner в `stdout`;
 - выполнить один pass proposal orchestration через `orchestrate-proposals`;
-- для Linear-задач в `Ready to Propose` создать proposal PR, прикрепить PR URL и перевести задачу в `Need Proposal Review`;
+- для Linear-задач в `Ready to Propose` перевести задачу в proposing-in-progress state, создать proposal PR, прикрепить PR URL и перевести задачу в `Need Proposal Review`;
 - писать структурные JSON Lines логи workflow в `stderr` или настроенный sink.
 
 Если запустить CLI без аргументов и без данных в `stdin`, proposal workflow не стартует.
@@ -22,11 +22,12 @@
 
 - `TaskManager` читает managed Linear tasks из одного настроенного project;
 - `CoreOrch` выбирает только задачи со state ID из `LINEAR_STATE_READY_TO_PROPOSE_ID`;
+- перед запуском runner `CoreOrch` переводит задачу в `LINEAR_STATE_PROPOSING_IN_PROGRESS_ID`;
 - `CoreOrch` формирует input из `identifier`, `title`, `description` и `comments`;
 - `proposalrunner` создает OpenSpec proposal PR во внешнем репозитории;
 - после успеха `CoreOrch` вызывает `TaskManager.AddPR(...)`, затем `TaskManager.MoveTask(...)` в `LINEAR_STATE_NEED_PROPOSAL_REVIEW_ID`.
 
-Если runner падает или Linear не смог прикрепить PR, задача не переводится в review state. Если PR уже прикреплен, но move task упал, команда завершится ошибкой с контекстом задачи и PR URL.
+Если перевод в proposing-in-progress state не удался, runner не запускается. Если runner падает или Linear не смог прикрепить PR, задача не переводится в review state. Если PR уже прикреплен, но move task упал, команда завершится ошибкой с контекстом задачи и PR URL.
 
 ## Зависимости
 
@@ -58,6 +59,7 @@ Go-модуль и зависимости зафиксированы в [go.mod]
 - `PROPOSAL_CLEANUP_TEMP` — удалять ли временную директорию после выполнения;
 - `LINEAR_API_URL`, `LINEAR_API_TOKEN`, `LINEAR_PROJECT_ID` — подключение к Linear и фильтр по проекту;
 - `LINEAR_STATE_READY_TO_PROPOSE_ID`, `LINEAR_STATE_READY_TO_CODE_ID`, `LINEAR_STATE_READY_TO_ARCHIVE_ID` — идентификаторы управляемых Linear state'ов для `TaskManager`;
+- `LINEAR_STATE_PROPOSING_IN_PROGRESS_ID`, `LINEAR_STATE_CODE_IN_PROGRESS_ID`, `LINEAR_STATE_ARCHIVING_IN_PROGRESS_ID` — target state IDs для in-progress переходов; текущий `CoreOrch` использует proposal-вариант перед запуском runner;
 - `LINEAR_STATE_NEED_PROPOSAL_REVIEW_ID`, `LINEAR_STATE_NEED_CODE_REVIEW_ID`, `LINEAR_STATE_NEED_ARCHIVE_REVIEW_ID` — target state IDs для review-этапов, которые `CoreOrch` использует при вызове `TaskManager.MoveTask(...)`;
 - `APP_ENV`, `APP_NAME`, `LOG_LEVEL`, `HTTP_PORT`, `OPENAI_API_KEY` — общие runtime-параметры, поддерживаемые конфигом.
 
@@ -99,7 +101,7 @@ go run ./cmd/orchv3 orchestrate-proposals
 1. В Linear подготовьте задачу в state, чей ID указан в `LINEAR_STATE_READY_TO_PROPOSE_ID`.
 2. Убедитесь, что `.env` заполнен для `PROPOSAL_*`, `LINEAR_*`, `git`, `codex` и `gh`.
 3. Запустите `go run ./cmd/orchv3 orchestrate-proposals`.
-4. Проверьте, что в Linear к задаче прикрепился PR URL, а state сменился на `LINEAR_STATE_NEED_PROPOSAL_REVIEW_ID`.
+4. Проверьте, что задача сначала перешла в `LINEAR_STATE_PROPOSING_IN_PROGRESS_ID`, затем к ней прикрепился PR URL, а финальный state сменился на `LINEAR_STATE_NEED_PROPOSAL_REVIEW_ID`.
 
 ## Ключевые директории
 

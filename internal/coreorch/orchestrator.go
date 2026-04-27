@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 
+	"orchv3/internal/proposalrunner"
 	"orchv3/internal/steplog"
 	"orchv3/internal/taskmanager"
 )
@@ -19,7 +20,7 @@ type TaskManager interface {
 }
 
 type ProposalRunner interface {
-	Run(ctx context.Context, taskDescription string) (string, error)
+	Run(ctx context.Context, input proposalrunner.ProposalInput) (string, error)
 }
 
 type Config struct {
@@ -104,7 +105,20 @@ func (orch *Orchestrator) processTask(ctx context.Context, logger steplog.Logger
 	return nil
 }
 
-func BuildProposalInput(task taskmanager.Task) string {
+func BuildProposalInput(task taskmanager.Task) proposalrunner.ProposalInput {
+	title := strings.TrimSpace(task.Title)
+	if title == "" {
+		title = "Untitled task"
+	}
+
+	return proposalrunner.ProposalInput{
+		Title:       title,
+		Identifier:  strings.TrimSpace(task.Identifier),
+		AgentPrompt: buildAgentPrompt(task),
+	}
+}
+
+func buildAgentPrompt(task taskmanager.Task) string {
 	var builder strings.Builder
 
 	builder.WriteString("Linear task:\n")

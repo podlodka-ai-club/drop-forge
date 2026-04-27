@@ -18,7 +18,7 @@ import (
 const orchestrateProposalsCommand = "orchestrate-proposals"
 
 type singleProposalRunner interface {
-	Run(ctx context.Context, taskDescription string) (string, error)
+	Run(ctx context.Context, input proposalrunner.ProposalInput) (string, error)
 }
 
 type proposalOrchestrator interface {
@@ -77,7 +77,10 @@ func runWithDeps(args []string, stdin *os.File, stdout io.Writer, stderr io.Writ
 
 	if taskDescription != "" {
 		runner := deps.newProposalRunner(cfg.ProposalRunner, cfg.AppName, logOut)
-		prURL, err := runner.Run(context.Background(), taskDescription)
+		prURL, err := runner.Run(context.Background(), proposalrunner.ProposalInput{
+			Title:       taskDescription,
+			AgentPrompt: taskDescription,
+		})
 		if err != nil {
 			logger.Errorf("cli", "run proposal workflow: %v", err)
 			return 1

@@ -4,15 +4,23 @@
 Описывает запуск Codex для подготовки OpenSpec proposal в отдельном clone workspace и публикацию результата в pull request.
 ## Requirements
 ### Requirement: Task description input
-The system SHALL expose a proposal runner module that accepts a task description string as the primary input and rejects empty or whitespace-only descriptions.
+The system SHALL expose a proposal runner module that accepts a structured `ProposalInput { Title, Identifier, AgentPrompt }` value as the primary input. The system SHALL reject inputs whose `Title` or `AgentPrompt` is empty or whitespace-only after trimming. `Identifier` is optional.
 
-#### Scenario: Valid task description is accepted
-- **WHEN** the caller starts the proposal runner with a non-empty task description
-- **THEN** the system starts the proposal PR workflow for that description
+#### Scenario: Valid proposal input is accepted
+- **WHEN** the caller starts the proposal runner with a `ProposalInput` whose `Title` and `AgentPrompt` are non-empty
+- **THEN** the system starts the proposal PR workflow for that input
 
-#### Scenario: Empty task description is rejected
-- **WHEN** the caller starts the proposal runner with an empty or whitespace-only task description
+#### Scenario: Empty title is rejected
+- **WHEN** the caller starts the proposal runner with a `ProposalInput` whose `Title` is empty or whitespace-only
 - **THEN** the system returns an error before creating a temp directory or running external commands
+
+#### Scenario: Empty agent prompt is rejected
+- **WHEN** the caller starts the proposal runner with a `ProposalInput` whose `AgentPrompt` is empty or whitespace-only
+- **THEN** the system returns an error before creating a temp directory or running external commands
+
+#### Scenario: Identifier is optional
+- **WHEN** the caller starts the proposal runner with a `ProposalInput` whose `Identifier` is empty
+- **THEN** the system proceeds with the workflow and derives PR metadata from `Title` alone
 
 ### Requirement: Runtime configuration from environment files
 The system SHALL read runtime configuration from `.env` with `github.com/joho/godotenv` and environment variables, including the target GitHub repository, branch settings, and external command paths.
@@ -60,15 +68,15 @@ The system SHALL create a unique temporary directory for each run, clone the con
 - **THEN** the system logs the clone output and returns an error that identifies the clone step
 
 ### Requirement: Codex CLI openspec propose execution
-The system SHALL execute the OpenSpec proposal generation step through an internal `AgentExecutor` contract. The default implementation SHALL remain Codex CLI and SHALL preserve the current local non-interactive command format `codex exec --json --sandbox danger-full-access --output-last-message <path> --cd <clone-dir> -`, with the prompt passed through stdin and containing the `openspec-propose` skill instruction plus the original task description.
+The system SHALL execute the OpenSpec proposal generation step through an internal `AgentExecutor` contract. The default implementation SHALL remain Codex CLI and SHALL preserve the current local non-interactive command format `codex exec --json --sandbox danger-full-access --output-last-message <path> --cd <clone-dir> -`, with the prompt passed through stdin. The prompt SHALL be the `AgentPrompt` field of the `ProposalInput`, which already contains the `openspec-propose` skill instruction plus the original task context.
 
 #### Scenario: Agent executor receives proposal task
 - **WHEN** the workflow reaches the agent proposal step
-- **THEN** the proposal runner invokes its configured `AgentExecutor` with the original task description and the clone workspace path
+- **THEN** the proposal runner invokes its configured `AgentExecutor` with the `AgentPrompt` from the `ProposalInput` and the clone workspace path
 
 #### Scenario: Codex executor receives prompt
 - **WHEN** the configured `AgentExecutor` is the default Codex CLI implementation
-- **THEN** the Codex executor logs the prompt and invokes `codex exec --json --sandbox danger-full-access --output-last-message <path> --cd <clone-dir> -` with that prompt on stdin
+- **THEN** the Codex executor logs the prompt and invokes `codex exec --json --sandbox danger-full-access --output-last-message <path> --cd <clone-dir> -` with the `AgentPrompt` on stdin
 
 #### Scenario: Agent executor succeeds
 - **WHEN** the `AgentExecutor` exits successfully after creating OpenSpec artifacts
@@ -149,4 +157,32 @@ The system SHALL publish the last non-empty agent response as a separate comment
 #### Scenario: Agent response comment fails
 - **WHEN** the pull request is created but publishing the last agent message as a comment fails
 - **THEN** the system returns an error that identifies the comment step and logs the comment creation output
+
+### Requirement: PR metadata is derived from task Title and Identifier
+The system SHALL derive the PR title, branch name, and commit message from the `ProposalInput`'s `Title` and `Identifier` fields, not from the `AgentPrompt`. When `Identifier` is non-empty, the human-readable display name used for these metadata SHALL be `"<Identifier>: <Title>"`; otherwise it SHALL be `<Title>` alone. The `AgentPrompt` field SHALL NOT influence PR title, branch name, or commit message.
+
+#### Scenario: Identifier and Title produce combined PR title
+- **WHEN** the proposal runner receives a `ProposalInput` with `Identifier="ZIM-42"` and `Title="Add export feature"`
+- **THEN** the resulting PR title contains `"ZIM-42: Add export feature"` (with the configured PR title prefix prepended if any)
+- **AND** the branch name is built from a slug of `"ZIM-42 Add export feature"`
+- **AND** the git commit message equals the PR title
+
+#### Scenario: Empty Identifier falls back to Title only
+- **WHEN** the proposal runner receives a `ProposalInput` with empty `Identifier` and `Title="Refactor payments module"`
+- **THEN** the resulting PR title contains `"Refactor payments module"` (with the configured prefix prepended if any) and does not contain a leading colon
+
+#### Scenario: AgentPrompt content does not appear in PR title
+- **WHEN** the proposal runner receives a `ProposalInput` whose `AgentPrompt` begins with the literal `"Linear task:"` and whose `Title` is `"Add export feature"`
+- **THEN** the resulting PR title does not contain `"Linear task:"` and is derived from `Title`
+
+#### Scenario: Title with embedded newlines is normalized
+- **WHEN** the proposal runner receives a `ProposalInput` whose `Title` contains a newline character
+- **THEN** the resulting PR title contains the title text with newlines replaced by spaces and is truncated to the configured maximum length
+
+### Requirement: Integration test covers orchestrator-to-runner contract
+The repository SHALL include a test that exercises `coreorch.BuildProposalInput` together with the proposal runner's PR-title derivation, and that fails if PR title, branch name, or commit message stop reflecting the source task's `Title` (and `Identifier` when present).
+
+#### Scenario: Contract test fails on regression
+- **WHEN** a developer changes either `BuildProposalInput` or the runner's metadata-derivation logic in a way that drops `Title` or `Identifier` from the PR title
+- **THEN** the test reports a failure that names both the produced and expected PR title
 

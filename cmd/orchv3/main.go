@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"orchv3/internal/applyrunner"
+	"orchv3/internal/archiverunner"
 	"orchv3/internal/commandrunner"
 	"orchv3/internal/config"
 	"orchv3/internal/coreorch"
@@ -25,6 +26,10 @@ type singleApplyRunner interface {
 	Run(ctx context.Context, input applyrunner.ApplyInput) error
 }
 
+type singleArchiveRunner interface {
+	Run(ctx context.Context, input archiverunner.ArchiveInput) error
+}
+
 type proposalMonitor interface {
 	RunProposalsLoop(ctx context.Context, interval time.Duration) error
 }
@@ -34,8 +39,9 @@ type appDeps struct {
 	buildLogger             func(stderr io.Writer, cfg config.Config, warnOut io.Writer) (steplog.Logger, io.Writer, io.Closer, error)
 	newProposalRunner       func(cfg config.ProposalRunnerConfig, service string, logOut io.Writer) singleProposalRunner
 	newApplyRunner          func(cfg config.ProposalRunnerConfig, service string, logOut io.Writer) singleApplyRunner
+	newArchiveRunner        func(cfg config.ProposalRunnerConfig, service string, logOut io.Writer) singleArchiveRunner
 	newTaskManager          func(cfg config.LinearTaskManagerConfig, logOut io.Writer) coreorch.TaskManager
-	newProposalOrchestrator func(cfg config.Config, tasks coreorch.TaskManager, proposalRunner coreorch.ProposalRunner, applyRunner coreorch.ApplyRunner, logOut io.Writer) proposalMonitor
+	newProposalOrchestrator func(cfg config.Config, tasks coreorch.TaskManager, proposalRunner coreorch.ProposalRunner, applyRunner coreorch.ApplyRunner, archiveRunner coreorch.ArchiveRunner, logOut io.Writer) proposalMonitor
 }
 
 func main() {
@@ -72,7 +78,8 @@ func runWithDeps(args []string, stdin *os.File, stdout io.Writer, stderr io.Writ
 	taskManager := deps.newTaskManager(cfg.TaskManager, logOut)
 	proposalRunner := deps.newProposalRunner(cfg.ProposalRunner, cfg.AppName, logOut)
 	applyRunner := deps.newApplyRunner(cfg.ProposalRunner, cfg.AppName, logOut)
-	orchestrator := deps.newProposalOrchestrator(cfg, taskManager, proposalRunner, applyRunner, logOut)
+	archiveRunner := deps.newArchiveRunner(cfg.ProposalRunner, cfg.AppName, logOut)
+	orchestrator := deps.newProposalOrchestrator(cfg, taskManager, proposalRunner, applyRunner, archiveRunner, logOut)
 	logger.Infof(
 		"cli",
 		"%s starting orchestration monitor in %s on port %d interval=%s",
@@ -134,12 +141,20 @@ func defaultDeps() appDeps {
 			runner.Command = commandrunner.ExecRunner{LogWriter: logOut}
 			return runner
 		},
+		newArchiveRunner: func(cfg config.ProposalRunnerConfig, service string, logOut io.Writer) singleArchiveRunner {
+			runner := archiverunner.New(cfg)
+			runner.Service = service
+			runner.Stdout = logOut
+			runner.Stderr = logOut
+			runner.Command = commandrunner.ExecRunner{LogWriter: logOut}
+			return runner
+		},
 		newTaskManager: func(cfg config.LinearTaskManagerConfig, logOut io.Writer) coreorch.TaskManager {
 			manager := taskmanager.New(cfg)
 			manager.LogWriter = logOut
 			return manager
 		},
-		newProposalOrchestrator: func(cfg config.Config, tasks coreorch.TaskManager, proposalRunner coreorch.ProposalRunner, applyRunner coreorch.ApplyRunner, logOut io.Writer) proposalMonitor {
+		newProposalOrchestrator: func(cfg config.Config, tasks coreorch.TaskManager, proposalRunner coreorch.ProposalRunner, applyRunner coreorch.ApplyRunner, archiveRunner coreorch.ArchiveRunner, logOut io.Writer) proposalMonitor {
 			return &coreorch.Orchestrator{
 				Config: coreorch.Config{
 					ReadyToProposeStateID:      cfg.TaskManager.ReadyToProposeStateID,
@@ -148,10 +163,14 @@ func defaultDeps() appDeps {
 					ReadyToCodeStateID:         cfg.TaskManager.ReadyToCodeStateID,
 					CodeInProgressStateID:      cfg.TaskManager.CodeInProgressStateID,
 					NeedCodeReviewStateID:      cfg.TaskManager.NeedCodeReviewStateID,
+					ReadyToArchiveStateID:      cfg.TaskManager.ReadyToArchiveStateID,
+					ArchivingInProgressStateID: cfg.TaskManager.ArchivingInProgressStateID,
+					NeedArchiveReviewStateID:   cfg.TaskManager.NeedArchiveReviewStateID,
 				},
 				TaskManager:    tasks,
 				ProposalRunner: proposalRunner,
 				ApplyRunner:    applyRunner,
+				ArchiveRunner:  archiveRunner,
 				Service:        cfg.AppName,
 				LogWriter:      logOut,
 			}

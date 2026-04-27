@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"orchv3/internal/applyrunner"
+	"orchv3/internal/archiverunner"
 	"orchv3/internal/config"
 	"orchv3/internal/coreorch"
 	"orchv3/internal/proposalrunner"
@@ -61,7 +62,7 @@ func TestRunWithoutTaskStartsProposalMonitor(t *testing.T) {
 	var stderr bytes.Buffer
 	deps := testDeps()
 	monitor := &fakeProposalMonitor{}
-	deps.newProposalOrchestrator = func(cfg config.Config, tasks coreorch.TaskManager, proposalRunner coreorch.ProposalRunner, applyRunner coreorch.ApplyRunner, logOut io.Writer) proposalMonitor {
+	deps.newProposalOrchestrator = func(cfg config.Config, tasks coreorch.TaskManager, proposalRunner coreorch.ProposalRunner, applyRunner coreorch.ApplyRunner, archiveRunner coreorch.ArchiveRunner, logOut io.Writer) proposalMonitor {
 		return monitor
 	}
 
@@ -137,12 +138,19 @@ func TestRunDefaultWiresDependenciesAndKeepsStdoutEmpty(t *testing.T) {
 		state.applyRunnerLogOut = logOut
 		return &fakeSingleApplyRunner{}
 	}
-	deps.newProposalOrchestrator = func(cfg config.Config, tasks coreorch.TaskManager, proposalRunner coreorch.ProposalRunner, applyRunner coreorch.ApplyRunner, logOut io.Writer) proposalMonitor {
+	deps.newArchiveRunner = func(cfg config.ProposalRunnerConfig, service string, logOut io.Writer) singleArchiveRunner {
+		state.archiveRunnerConfig = cfg
+		state.archiveRunnerService = service
+		state.archiveRunnerLogOut = logOut
+		return &fakeSingleArchiveRunner{}
+	}
+	deps.newProposalOrchestrator = func(cfg config.Config, tasks coreorch.TaskManager, proposalRunner coreorch.ProposalRunner, applyRunner coreorch.ApplyRunner, archiveRunner coreorch.ArchiveRunner, logOut io.Writer) proposalMonitor {
 		state.orchestratorConfig = cfg
 		state.orchestratorLogOut = logOut
 		state.orchestratorTaskManager = tasks
 		state.orchestratorRunner = proposalRunner
 		state.orchestratorApplyRunner = applyRunner
+		state.orchestratorArchiveRunner = archiveRunner
 		return &fakeProposalMonitor{}
 	}
 
@@ -168,6 +176,12 @@ func TestRunDefaultWiresDependenciesAndKeepsStdoutEmpty(t *testing.T) {
 	if state.applyRunnerService != "orchv3-test" {
 		t.Fatalf("apply runner service = %q", state.applyRunnerService)
 	}
+	if state.archiveRunnerConfig.RepositoryURL != "git@github.com:example/repo.git" {
+		t.Fatalf("archive runner repository = %q", state.archiveRunnerConfig.RepositoryURL)
+	}
+	if state.archiveRunnerService != "orchv3-test" {
+		t.Fatalf("archive runner service = %q", state.archiveRunnerService)
+	}
 	if state.orchestratorConfig.TaskManager.ReadyToProposeStateID != "state-propose" {
 		t.Fatalf("orchestrator ready state = %q", state.orchestratorConfig.TaskManager.ReadyToProposeStateID)
 	}
@@ -180,31 +194,41 @@ func TestRunDefaultWiresDependenciesAndKeepsStdoutEmpty(t *testing.T) {
 	if state.orchestratorConfig.TaskManager.NeedCodeReviewStateID != "state-code-review" {
 		t.Fatalf("orchestrator need code review state = %q", state.orchestratorConfig.TaskManager.NeedCodeReviewStateID)
 	}
-	if state.taskManagerLogOut == nil || state.runnerLogOut == nil || state.applyRunnerLogOut == nil || state.orchestratorLogOut == nil {
+	if state.orchestratorConfig.TaskManager.ArchivingInProgressStateID != "state-archiving-progress" {
+		t.Fatalf("orchestrator archiving in-progress state = %q", state.orchestratorConfig.TaskManager.ArchivingInProgressStateID)
+	}
+	if state.orchestratorConfig.TaskManager.NeedArchiveReviewStateID != "state-archive-review" {
+		t.Fatalf("orchestrator need archive review state = %q", state.orchestratorConfig.TaskManager.NeedArchiveReviewStateID)
+	}
+	if state.taskManagerLogOut == nil || state.runnerLogOut == nil || state.applyRunnerLogOut == nil || state.archiveRunnerLogOut == nil || state.orchestratorLogOut == nil {
 		t.Fatal("log outputs should be wired")
 	}
-	if state.orchestratorTaskManager == nil || state.orchestratorRunner == nil || state.orchestratorApplyRunner == nil {
+	if state.orchestratorTaskManager == nil || state.orchestratorRunner == nil || state.orchestratorApplyRunner == nil || state.orchestratorArchiveRunner == nil {
 		t.Fatal("orchestrator dependencies should be wired")
 	}
 }
 
-func TestDefaultProposalOrchestratorWiresApplyStates(t *testing.T) {
+func TestDefaultProposalOrchestratorWiresApplyAndArchiveStates(t *testing.T) {
 	cfg := config.Config{
 		AppName: "orchv3-test",
 		TaskManager: config.LinearTaskManagerConfig{
 			ReadyToProposeStateID:      "state-propose",
 			ReadyToCodeStateID:         "state-code",
+			ReadyToArchiveStateID:      "state-archive",
 			ProposingInProgressStateID: "state-proposing-progress",
 			CodeInProgressStateID:      "state-code-progress",
+			ArchivingInProgressStateID: "state-archiving-progress",
 			NeedProposalReviewStateID:  "state-proposal-review",
 			NeedCodeReviewStateID:      "state-code-review",
+			NeedArchiveReviewStateID:   "state-archive-review",
 		},
 	}
 	tasks := &fakeTaskManager{}
 	runner := &fakeSingleProposalRunner{}
 	apply := &fakeSingleApplyRunner{}
+	archive := &fakeSingleArchiveRunner{}
 
-	orchestrator, ok := defaultDeps().newProposalOrchestrator(cfg, tasks, runner, apply, io.Discard).(*coreorch.Orchestrator)
+	orchestrator, ok := defaultDeps().newProposalOrchestrator(cfg, tasks, runner, apply, archive, io.Discard).(*coreorch.Orchestrator)
 	if !ok {
 		t.Fatalf("orchestrator type = %T, want *coreorch.Orchestrator", orchestrator)
 	}
@@ -220,8 +244,20 @@ func TestDefaultProposalOrchestratorWiresApplyStates(t *testing.T) {
 	if orchestrator.Config.NeedCodeReviewStateID != "state-code-review" {
 		t.Fatalf("NeedCodeReviewStateID = %q", orchestrator.Config.NeedCodeReviewStateID)
 	}
+	if orchestrator.Config.ReadyToArchiveStateID != "state-archive" {
+		t.Fatalf("ReadyToArchiveStateID = %q", orchestrator.Config.ReadyToArchiveStateID)
+	}
+	if orchestrator.Config.ArchivingInProgressStateID != "state-archiving-progress" {
+		t.Fatalf("ArchivingInProgressStateID = %q", orchestrator.Config.ArchivingInProgressStateID)
+	}
+	if orchestrator.Config.NeedArchiveReviewStateID != "state-archive-review" {
+		t.Fatalf("NeedArchiveReviewStateID = %q", orchestrator.Config.NeedArchiveReviewStateID)
+	}
 	if orchestrator.ApplyRunner != apply {
 		t.Fatal("apply runner should be wired")
+	}
+	if orchestrator.ArchiveRunner != archive {
+		t.Fatal("archive runner should be wired")
 	}
 }
 
@@ -326,19 +362,23 @@ func emptyTempFile(t *testing.T) *os.File {
 }
 
 type cliTestState struct {
-	taskManagerConfig       config.LinearTaskManagerConfig
-	taskManagerLogOut       io.Writer
-	runnerConfig            config.ProposalRunnerConfig
-	runnerService           string
-	runnerLogOut            io.Writer
-	applyRunnerConfig       config.ProposalRunnerConfig
-	applyRunnerService      string
-	applyRunnerLogOut       io.Writer
-	orchestratorConfig      config.Config
-	orchestratorLogOut      io.Writer
-	orchestratorTaskManager coreorch.TaskManager
-	orchestratorRunner      coreorch.ProposalRunner
-	orchestratorApplyRunner coreorch.ApplyRunner
+	taskManagerConfig         config.LinearTaskManagerConfig
+	taskManagerLogOut         io.Writer
+	runnerConfig              config.ProposalRunnerConfig
+	runnerService             string
+	runnerLogOut              io.Writer
+	applyRunnerConfig         config.ProposalRunnerConfig
+	applyRunnerService        string
+	applyRunnerLogOut         io.Writer
+	archiveRunnerConfig       config.ProposalRunnerConfig
+	archiveRunnerService      string
+	archiveRunnerLogOut       io.Writer
+	orchestratorConfig        config.Config
+	orchestratorLogOut        io.Writer
+	orchestratorTaskManager   coreorch.TaskManager
+	orchestratorRunner        coreorch.ProposalRunner
+	orchestratorApplyRunner   coreorch.ApplyRunner
+	orchestratorArchiveRunner coreorch.ArchiveRunner
 }
 
 type fakeSingleProposalRunner struct {
@@ -358,6 +398,16 @@ type fakeSingleApplyRunner struct {
 }
 
 func (runner *fakeSingleApplyRunner) Run(ctx context.Context, input applyrunner.ApplyInput) error {
+	runner.inputs = append(runner.inputs, input)
+	return runner.err
+}
+
+type fakeSingleArchiveRunner struct {
+	inputs []archiverunner.ArchiveInput
+	err    error
+}
+
+func (runner *fakeSingleArchiveRunner) Run(ctx context.Context, input archiverunner.ArchiveInput) error {
 	runner.inputs = append(runner.inputs, input)
 	return runner.err
 }
@@ -401,10 +451,13 @@ func testDeps() appDeps {
 					ProjectID:                  "project-123",
 					ReadyToProposeStateID:      "state-propose",
 					ReadyToCodeStateID:         "state-code",
+					ReadyToArchiveStateID:      "state-archive",
 					ProposingInProgressStateID: "state-proposing-progress",
 					CodeInProgressStateID:      "state-code-progress",
+					ArchivingInProgressStateID: "state-archiving-progress",
 					NeedProposalReviewStateID:  "state-proposal-review",
 					NeedCodeReviewStateID:      "state-code-review",
+					NeedArchiveReviewStateID:   "state-archive-review",
 				},
 			}, nil
 		},
@@ -417,10 +470,13 @@ func testDeps() appDeps {
 		newApplyRunner: func(cfg config.ProposalRunnerConfig, service string, logOut io.Writer) singleApplyRunner {
 			return &fakeSingleApplyRunner{}
 		},
+		newArchiveRunner: func(cfg config.ProposalRunnerConfig, service string, logOut io.Writer) singleArchiveRunner {
+			return &fakeSingleArchiveRunner{}
+		},
 		newTaskManager: func(cfg config.LinearTaskManagerConfig, logOut io.Writer) coreorch.TaskManager {
 			return &fakeTaskManager{}
 		},
-		newProposalOrchestrator: func(cfg config.Config, tasks coreorch.TaskManager, proposalRunner coreorch.ProposalRunner, applyRunner coreorch.ApplyRunner, logOut io.Writer) proposalMonitor {
+		newProposalOrchestrator: func(cfg config.Config, tasks coreorch.TaskManager, proposalRunner coreorch.ProposalRunner, applyRunner coreorch.ApplyRunner, archiveRunner coreorch.ArchiveRunner, logOut io.Writer) proposalMonitor {
 			return &fakeProposalMonitor{}
 		},
 	}

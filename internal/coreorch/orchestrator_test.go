@@ -95,6 +95,91 @@ func TestRunProposalsOnceWithNoReadyTasksDoesNotMutateTasks(t *testing.T) {
 	assertLogContains(t, events, "no ready-to-propose tasks found")
 }
 
+func TestRunProposalsLoopRepeatsAfterSuccessAndWaitsInterval(t *testing.T) {
+	taskManager := &recordingTaskManager{}
+	runner := &recordingProposalRunner{}
+	var logs bytes.Buffer
+	orch := testOrchestrator(taskManager, runner, &logs)
+	ctx, cancel := context.WithCancel(context.Background())
+	waiter := &recordingWaiter{
+		cancelAfterCalls: 2,
+		cancel:           cancel,
+	}
+
+	if err := orch.runProposalsLoop(ctx, 2*time.Second, waiter.Wait); err != nil {
+		t.Fatalf("runProposalsLoop() returned error: %v", err)
+	}
+
+	if taskManager.getTasksCalls != 2 {
+		t.Fatalf("GetTasks calls = %d, want 2", taskManager.getTasksCalls)
+	}
+	if got := durationsString(waiter.intervals); got != "2s,2s" {
+		t.Fatalf("wait intervals = %s, want 2s,2s", got)
+	}
+
+	events := decodeEvents(t, logs.String())
+	assertLogContains(t, events, "proposal monitor iteration start iteration=1")
+	assertLogContains(t, events, "proposal monitor iteration start iteration=2")
+	assertLogContains(t, events, "proposal monitor stopped: context canceled")
+}
+
+func TestRunProposalsLoopContinuesAfterIterationError(t *testing.T) {
+	taskManager := &recordingTaskManager{getTasksErr: errors.New("linear unavailable")}
+	runner := &recordingProposalRunner{}
+	var logs bytes.Buffer
+	orch := testOrchestrator(taskManager, runner, &logs)
+	ctx, cancel := context.WithCancel(context.Background())
+	waiter := &recordingWaiter{
+		cancelAfterCalls: 2,
+		cancel:           cancel,
+	}
+
+	if err := orch.runProposalsLoop(ctx, time.Second, waiter.Wait); err != nil {
+		t.Fatalf("runProposalsLoop() returned error: %v", err)
+	}
+
+	if taskManager.getTasksCalls != 2 {
+		t.Fatalf("GetTasks calls = %d, want 2", taskManager.getTasksCalls)
+	}
+
+	events := decodeEvents(t, logs.String())
+	assertLogContains(t, events, "proposal monitor iteration error iteration=1")
+	assertLogContains(t, events, "proposal monitor iteration start iteration=2")
+}
+
+func TestRunProposalsLoopStopsBeforeNextPassWhenContextCancelledDuringWait(t *testing.T) {
+	taskManager := &recordingTaskManager{}
+	runner := &recordingProposalRunner{}
+	orch := testOrchestrator(taskManager, runner, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	waiter := &recordingWaiter{
+		cancelAfterCalls: 1,
+		cancel:           cancel,
+	}
+
+	if err := orch.runProposalsLoop(ctx, time.Second, waiter.Wait); err != nil {
+		t.Fatalf("runProposalsLoop() returned error: %v", err)
+	}
+	if taskManager.getTasksCalls != 1 {
+		t.Fatalf("GetTasks calls = %d, want 1", taskManager.getTasksCalls)
+	}
+}
+
+func TestRunProposalsLoopRequiresPositiveInterval(t *testing.T) {
+	orch := testOrchestrator(&recordingTaskManager{}, &recordingProposalRunner{}, nil)
+
+	err := orch.runProposalsLoop(context.Background(), 0, func(ctx context.Context, interval time.Duration) error {
+		t.Fatal("wait func must not be called")
+		return nil
+	})
+	if err == nil {
+		t.Fatal("runProposalsLoop() error = nil, want non-nil")
+	}
+	if !strings.Contains(err.Error(), "proposal poll interval") {
+		t.Fatalf("error = %q, want poll interval context", err.Error())
+	}
+}
+
 func TestBuildProposalInputIncludesTaskPayloadDeterministically(t *testing.T) {
 	task := readyTask("issue-1", "ENG-1", "Add proposal flow")
 	task.Description = "Implement the proposal stage."
@@ -310,6 +395,7 @@ func TestRunProposalsOnceMoveTaskFailureReturnsPartialSuccessContext(t *testing.
 
 type recordingTaskManager struct {
 	tasks            []taskmanager.Task
+	getTasksCalls    int
 	getTasksErr      error
 	addPRErr         error
 	moveErr          error
@@ -322,6 +408,7 @@ type recordingTaskManager struct {
 }
 
 func (manager *recordingTaskManager) GetTasks(ctx context.Context) ([]taskmanager.Task, error) {
+	manager.getTasksCalls++
 	return manager.tasks, manager.getTasksErr
 }
 
@@ -428,4 +515,29 @@ func readyTask(id string, identifier string, title string) taskmanager.Task {
 
 type ioWriter interface {
 	Write(p []byte) (int, error)
+}
+
+type recordingWaiter struct {
+	intervals        []time.Duration
+	cancelAfterCalls int
+	cancel           context.CancelFunc
+}
+
+func (waiter *recordingWaiter) Wait(ctx context.Context, interval time.Duration) error {
+	waiter.intervals = append(waiter.intervals, interval)
+	if waiter.cancelAfterCalls > 0 && len(waiter.intervals) >= waiter.cancelAfterCalls {
+		waiter.cancel()
+		return ctx.Err()
+	}
+
+	return ctx.Err()
+}
+
+func durationsString(durations []time.Duration) string {
+	values := make([]string, 0, len(durations))
+	for _, duration := range durations {
+		values = append(values, duration.String())
+	}
+
+	return strings.Join(values, ",")
 }

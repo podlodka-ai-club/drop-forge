@@ -22,6 +22,21 @@ The system SHALL expose a proposal runner module that accepts a structured `Prop
 - **WHEN** the caller starts the proposal runner with a `ProposalInput` whose `Identifier` is empty
 - **THEN** the system proceeds with the workflow and derives PR metadata from `Title` alone
 
+### Requirement: Proposal runner is invoked only through orchestration runtime
+The system SHALL keep the proposal runner module available for internal orchestration calls while preventing the CLI from exposing a direct manual proposal runner mode.
+
+#### Scenario: Orchestration invokes proposal runner
+- **WHEN** proposal orchestration processes a task from `Ready to propose`
+- **THEN** it can call the proposal runner with the prepared Linear task input
+
+#### Scenario: CLI arguments do not invoke proposal runner directly
+- **WHEN** a user passes a task description as CLI arguments
+- **THEN** the CLI does not call the proposal runner directly
+
+#### Scenario: CLI stdin does not invoke proposal runner directly
+- **WHEN** a user pipes a task description into the CLI
+- **THEN** the CLI does not call the proposal runner directly
+
 ### Requirement: Runtime configuration from environment files
 The system SHALL read runtime configuration from `.env` with `github.com/joho/godotenv` and environment variables, including the target GitHub repository, branch settings, and external command paths.
 
@@ -185,4 +200,3 @@ The repository SHALL include a test that exercises `coreorch.BuildProposalInput`
 #### Scenario: Contract test fails on regression
 - **WHEN** a developer changes either `BuildProposalInput` or the runner's metadata-derivation logic in a way that drops `Title` or `Identifier` from the PR title
 - **THEN** the test reports a failure that names both the produced and expected PR title
-

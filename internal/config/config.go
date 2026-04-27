@@ -26,20 +26,22 @@ const (
 	defaultProposalCodexPath     = "codex"
 	defaultProposalGHPath        = "gh"
 
-	defaultLinearAPIURL        = "https://api.linear.app/graphql"
-	defaultLogstashBufferSize  = 1024
-	defaultLogstashDialTimeout = 2 * time.Second
+	defaultLinearAPIURL         = "https://api.linear.app/graphql"
+	defaultLogstashBufferSize   = 1024
+	defaultLogstashDialTimeout  = 2 * time.Second
+	defaultProposalPollInterval = 30 * time.Second
 )
 
 type Config struct {
-	AppEnv         string
-	AppName        string
-	LogLevel       string
-	HTTPPort       int
-	OpenAIAPIKey   string
-	ProposalRunner ProposalRunnerConfig
-	TaskManager    LinearTaskManagerConfig
-	Logstash       LogstashConfig
+	AppEnv               string
+	AppName              string
+	LogLevel             string
+	HTTPPort             int
+	OpenAIAPIKey         string
+	ProposalPollInterval time.Duration
+	ProposalRunner       ProposalRunnerConfig
+	TaskManager          LinearTaskManagerConfig
+	Logstash             LogstashConfig
 }
 
 type LogstashConfig struct {
@@ -95,12 +97,18 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 
+	proposalPollInterval, err := positiveDurationFromEnv("PROPOSAL_POLL_INTERVAL", defaultProposalPollInterval)
+	if err != nil {
+		return Config{}, err
+	}
+
 	return Config{
-		AppEnv:       trimmedStringFromEnv("APP_ENV", defaultAppEnv),
-		AppName:      trimmedStringFromEnv("APP_NAME", defaultAppName),
-		LogLevel:     trimmedStringFromEnv("LOG_LEVEL", defaultLogLevel),
-		HTTPPort:     httpPort,
-		OpenAIAPIKey: os.Getenv("OPENAI_API_KEY"),
+		AppEnv:               trimmedStringFromEnv("APP_ENV", defaultAppEnv),
+		AppName:              trimmedStringFromEnv("APP_NAME", defaultAppName),
+		LogLevel:             trimmedStringFromEnv("LOG_LEVEL", defaultLogLevel),
+		HTTPPort:             httpPort,
+		OpenAIAPIKey:         os.Getenv("OPENAI_API_KEY"),
+		ProposalPollInterval: proposalPollInterval,
 		ProposalRunner: ProposalRunnerConfig{
 			RepositoryURL: trimmedStringFromEnv("PROPOSAL_REPOSITORY_URL", ""),
 			BaseBranch:    trimmedStringFromEnv("PROPOSAL_BASE_BRANCH", defaultProposalBaseBranch),
@@ -160,6 +168,18 @@ func durationFromEnv(key string, fallback time.Duration) (time.Duration, error) 
 	parsed, err := time.ParseDuration(value)
 	if err != nil {
 		return 0, fmt.Errorf("%s must be a duration: %w", key, err)
+	}
+
+	return parsed, nil
+}
+
+func positiveDurationFromEnv(key string, fallback time.Duration) (time.Duration, error) {
+	parsed, err := durationFromEnv(key, fallback)
+	if err != nil {
+		return 0, err
+	}
+	if parsed <= 0 {
+		return 0, fmt.Errorf("%s must be a positive duration, got %s", key, parsed)
 	}
 
 	return parsed, nil

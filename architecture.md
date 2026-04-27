@@ -24,6 +24,16 @@
 9. Если человек отклоняет proposal, задача возвращается в `Ready to Propose` и цикл повторяется.
 10. Если человек принимает proposal, задача переводится в `Ready to Code`.
 
+## Целевой Поток Apply-Stage
+
+1. `CoreOrch` в том же проходе monitor-а получает managed tasks от `TaskManager`.
+2. Задачи в `Ready to Code` маршрутизируются в Apply-stage.
+3. `TaskManager` возвращает вместе с задачей источник ветки: PR URL, branch name или оба значения.
+4. `CoreOrch` переводит задачу в `Code in Progress` до запуска executor-а.
+5. `ApplyRunner` клонирует репозиторий во временную директорию, определяет ветку из branch name или PR URL, переключается на нее и запускает Codex с OpenSpec Apply-инструкцией.
+6. Если агент создал изменения, `ApplyRunner` выполняет `git add`, `commit` и `push` в ту же ветку без создания нового PR.
+7. После успешного push `CoreOrch` переводит задачу в `Need Code Review`.
+
 ## Границы Ответственности
 
 - `CoreOrch` координирует сценарий, но не должен содержать детали `git`, `gh`, `codex` или API task tracker-а.
@@ -36,16 +46,16 @@
 
 - При создании, выделении или существенном изменении сервисов агент обязан обновлять эту секцию, чтобы статус реализации и маппинг на код оставались актуальными.
 - `Logger` уже реализован в `internal/steplog`. Это текущий готовый сервис с явным контрактом JSON Lines.
-- `AgentExecutor` реализован как явный контракт внутри `internal/proposalrunner`. Текущая реализация `CodexCLIExecutor` изолирует протокол `codex exec`, prompt и сбор final message, а `Runner` использует этот контракт как шаг proposal workflow.
-- `GitManager` пока не выделен в отдельный пакет, но его ответственность уже фактически присутствует внутри `internal/proposalrunner` через команды `git clone`, `checkout -b`, `add`, `commit`, `push` и `gh pr create`.
-- `CoreOrch` для proposal-stage реализован в `internal/coreorch`: он получает managed tasks через контракт `TaskManager`, фильтрует задачи по `ReadyToProposeStateID`, последовательно запускает `ProposalRunner`, прикрепляет PR URL и переводит задачу в `NeedProposalReviewStateID`. Поверх `RunProposalsOnce` в этом же пакете есть continuous monitor loop, который повторяет проходы до отмены context и продолжает работу после ошибок отдельных итераций.
-- `cmd/orchv3/main.go` запускает proposal monitor как default runtime без аргументов CLI. Прямой single-run запуск `proposalrunner.Run` по task description из args/stdin удален; непустые args/stdin считаются unsupported manual input.
-- `TaskManager` реализован в `internal/taskmanager`: сервис читает managed Linear tasks, возвращает внутреннюю модель задачи с идентификаторами, описанием, состоянием и комментариями, а также выполняет `AddPR` и `MoveTask`.
+- `AgentExecutor` реализован как явный контракт внутри `internal/proposalrunner` и `internal/applyrunner`. Текущие реализации `CodexCLIExecutor` изолируют протокол `codex exec` и stage-specific prompt.
+- `GitManager` пока не выделен в отдельный пакет, но его ответственность уже фактически присутствует внутри `internal/proposalrunner` и `internal/applyrunner` через команды `git clone`, `checkout`, `add`, `commit`, `push` и `gh`.
+- `CoreOrch` реализован в `internal/coreorch`: он получает managed tasks через контракт `TaskManager`, последовательно маршрутизирует `ReadyToProposeStateID` в `ProposalRunner`, а `ReadyToCodeStateID` в `ApplyRunner`. Proposal-route прикрепляет PR URL и переводит задачу в `NeedProposalReviewStateID`; Apply-route переводит задачу через `CodeInProgressStateID` в `NeedCodeReviewStateID`.
+- `cmd/orchv3/main.go` запускает orchestration monitor как default runtime без аргументов CLI. Прямой single-run запуск `proposalrunner.Run` по task description из args/stdin удален; непустые args/stdin считаются unsupported manual input.
+- `TaskManager` реализован в `internal/taskmanager`: сервис читает managed Linear tasks, возвращает внутреннюю модель задачи с идентификаторами, описанием, состоянием, комментариями и PR attachment URL, а также выполняет `AddPR` и `MoveTask`.
 - `internal/commandrunner` — это не отдельный доменный актор, а технический адаптер для запуска внешних команд, который уже переиспользуется `AgentExecutor`/будущим `GitManager`.
 
 ## Текущее Архитектурное Чтение Репозитория
 
-- Сегодня проект покрывает вертикальный slice `CoreOrch -> TaskManager -> AgentExecutor -> GitManager -> Logger` и запускает его из CLI как долгоживущий proposal monitor с конфигурируемым polling interval.
-- `AgentExecutor` уже выделен как внутренняя граница, но находится в пакете `internal/proposalrunner`.
+- Сегодня проект покрывает proposal и apply slice `CoreOrch -> TaskManager -> AgentExecutor -> GitManager -> Logger` и запускает его из CLI как долгоживущий orchestration monitor с конфигурируемым polling interval.
+- `AgentExecutor` уже выделен как внутренняя граница, но stage-specific реализации находятся в пакетах `internal/proposalrunner` и `internal/applyrunner`.
 - Следующий естественный шаг роста — отделить из `internal/proposalrunner` самостоятельный `GitManager`; более сложный scheduler/backoff стоит добавлять только при подтвержденной необходимости.
 - До появления реальной потребности не выделять новые сервисы сверх этих пяти ролей.

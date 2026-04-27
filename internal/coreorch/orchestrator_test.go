@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"orchv3/internal/applyrunner"
 	"orchv3/internal/proposalrunner"
 	"orchv3/internal/taskmanager"
 )
@@ -21,7 +22,7 @@ func TestRunProposalsOnceProcessesOnlyReadyTasksSequentially(t *testing.T) {
 				ID:         "issue-2",
 				Identifier: "ENG-2",
 				Title:      "Skip me",
-				State:      taskmanager.WorkflowState{ID: "state-code"},
+				State:      taskmanager.WorkflowState{ID: "state-archive"},
 			},
 			readyTask("issue-3", "ENG-3", "Second"),
 		},
@@ -65,7 +66,7 @@ func TestRunProposalsOnceProcessesOnlyReadyTasksSequentially(t *testing.T) {
 	}
 
 	events := decodeEvents(t, logs.String())
-	assertLogContains(t, events, "skip task=issue-2 identifier=ENG-2 state=state-code")
+	assertLogContains(t, events, "skip task=issue-2 identifier=ENG-2 state=state-archive")
 	assertLogContains(t, events, "processed proposal task=issue-3 identifier=ENG-3 pr=https://github.com/example/repo/pull/2")
 }
 
@@ -74,7 +75,7 @@ func TestRunProposalsOnceWithNoReadyTasksDoesNotMutateTasks(t *testing.T) {
 		tasks: []taskmanager.Task{{
 			ID:         "issue-1",
 			Identifier: "ENG-1",
-			State:      taskmanager.WorkflowState{ID: "state-code"},
+			State:      taskmanager.WorkflowState{ID: "state-archive"},
 		}},
 	}
 	runner := &recordingProposalRunner{}
@@ -93,6 +94,123 @@ func TestRunProposalsOnceWithNoReadyTasksDoesNotMutateTasks(t *testing.T) {
 
 	events := decodeEvents(t, logs.String())
 	assertLogContains(t, events, "no ready-to-propose tasks found")
+}
+
+func TestRunProposalsOnceRoutesProposalAndApplyTasksSequentially(t *testing.T) {
+	taskManager := &recordingTaskManager{
+		tasks: []taskmanager.Task{
+			readyTask("issue-1", "ENG-1", "Proposal"),
+			readyCodeTask("issue-2", "ENG-2", "Apply", taskmanager.PullRequest{URL: "https://github.com/example/repo/pull/2"}),
+		},
+	}
+	proposalRunner := &recordingProposalRunner{urls: []string{"https://github.com/example/repo/pull/1"}}
+	applyRunner := &recordingApplyRunner{}
+	orch := testOrchestratorWithApply(taskManager, proposalRunner, applyRunner, nil)
+
+	if err := orch.RunProposalsOnce(context.Background()); err != nil {
+		t.Fatalf("RunProposalsOnce() returned error: %v", err)
+	}
+
+	if len(proposalRunner.inputs) != 1 {
+		t.Fatalf("proposal inputs len = %d, want 1", len(proposalRunner.inputs))
+	}
+	if len(applyRunner.inputs) != 1 {
+		t.Fatalf("apply inputs len = %d, want 1", len(applyRunner.inputs))
+	}
+	if applyRunner.inputs[0].PRURL != "https://github.com/example/repo/pull/2" || applyRunner.inputs[0].Identifier != "ENG-2" {
+		t.Fatalf("apply input = %#v", applyRunner.inputs[0])
+	}
+	if got := strings.Join(taskManager.calls, ","); got != "move:issue-1:state-proposing-progress,add-pr:issue-1,move:issue-1:state-proposal-review,move:issue-2:state-code-progress,move:issue-2:state-code-review" {
+		t.Fatalf("mutation calls = %q", got)
+	}
+}
+
+func TestRunProposalsOnceRejectsApplyTaskWithoutBranchSource(t *testing.T) {
+	taskManager := &recordingTaskManager{
+		tasks: []taskmanager.Task{readyCodeTask("issue-1", "ENG-1", "Apply", taskmanager.PullRequest{})},
+	}
+	applyRunner := &recordingApplyRunner{}
+	orch := testOrchestratorWithApply(taskManager, &recordingProposalRunner{}, applyRunner, nil)
+
+	err := orch.RunProposalsOnce(context.Background())
+	if err == nil {
+		t.Fatal("RunProposalsOnce() error = nil, want non-nil")
+	}
+	if !strings.Contains(err.Error(), "pull request branch source is missing") {
+		t.Fatalf("error = %q, want branch source context", err.Error())
+	}
+	if len(applyRunner.inputs) != 0 {
+		t.Fatalf("apply inputs len = %d, want 0", len(applyRunner.inputs))
+	}
+	if len(taskManager.moveTaskIDs) != 0 {
+		t.Fatalf("move calls = %#v, want none", taskManager.moveTaskIDs)
+	}
+}
+
+func TestRunProposalsOnceCodeInProgressMoveFailureDoesNotRunApply(t *testing.T) {
+	taskManager := &recordingTaskManager{
+		tasks: []taskmanager.Task{readyCodeTask("issue-1", "ENG-1", "Apply", taskmanager.PullRequest{Branch: "feature/task"})},
+		moveErrByStateID: map[string]error{
+			"state-code-progress": errors.New("linear move failed"),
+		},
+	}
+	applyRunner := &recordingApplyRunner{}
+	orch := testOrchestratorWithApply(taskManager, &recordingProposalRunner{}, applyRunner, nil)
+
+	err := orch.RunProposalsOnce(context.Background())
+	if err == nil {
+		t.Fatal("RunProposalsOnce() error = nil, want non-nil")
+	}
+	if !strings.Contains(err.Error(), "move to code in-progress state state-code-progress") {
+		t.Fatalf("error = %q, want in-progress move context", err.Error())
+	}
+	if len(applyRunner.inputs) != 0 {
+		t.Fatalf("apply inputs len = %d, want 0", len(applyRunner.inputs))
+	}
+	if got := strings.Join(taskManager.moveStateIDs, ","); got != "state-code-progress" {
+		t.Fatalf("MoveTask states = %q", got)
+	}
+}
+
+func TestRunProposalsOnceApplyFailureDoesNotMoveTaskToCodeReview(t *testing.T) {
+	taskManager := &recordingTaskManager{
+		tasks: []taskmanager.Task{readyCodeTask("issue-1", "ENG-1", "Apply", taskmanager.PullRequest{Branch: "feature/task"})},
+	}
+	applyRunner := &recordingApplyRunner{err: errors.New("apply failed")}
+	orch := testOrchestratorWithApply(taskManager, &recordingProposalRunner{}, applyRunner, nil)
+
+	err := orch.RunProposalsOnce(context.Background())
+	if err == nil {
+		t.Fatal("RunProposalsOnce() error = nil, want non-nil")
+	}
+	if !strings.Contains(err.Error(), "run apply") {
+		t.Fatalf("error = %q, want apply context", err.Error())
+	}
+	if got := strings.Join(taskManager.moveStateIDs, ","); got != "state-code-progress" {
+		t.Fatalf("MoveTask states = %q", got)
+	}
+}
+
+func TestRunProposalsOnceCodeReviewMoveFailureReturnsContext(t *testing.T) {
+	taskManager := &recordingTaskManager{
+		tasks: []taskmanager.Task{readyCodeTask("issue-1", "ENG-1", "Apply", taskmanager.PullRequest{Branch: "feature/task"})},
+		moveErrByStateID: map[string]error{
+			"state-code-review": errors.New("linear move failed"),
+		},
+	}
+	applyRunner := &recordingApplyRunner{}
+	orch := testOrchestratorWithApply(taskManager, &recordingProposalRunner{}, applyRunner, nil)
+
+	err := orch.RunProposalsOnce(context.Background())
+	if err == nil {
+		t.Fatal("RunProposalsOnce() error = nil, want non-nil")
+	}
+	if !strings.Contains(err.Error(), "move to code review state state-code-review") {
+		t.Fatalf("error = %q, want code review move context", err.Error())
+	}
+	if got := strings.Join(taskManager.moveStateIDs, ","); got != "state-code-progress,state-code-review" {
+		t.Fatalf("MoveTask states = %q", got)
+	}
 }
 
 func TestRunProposalsLoopRepeatsAfterSuccessAndWaitsInterval(t *testing.T) {
@@ -118,8 +236,8 @@ func TestRunProposalsLoopRepeatsAfterSuccessAndWaitsInterval(t *testing.T) {
 	}
 
 	events := decodeEvents(t, logs.String())
-	assertLogContains(t, events, "proposal monitor iteration start iteration=1")
-	assertLogContains(t, events, "proposal monitor iteration start iteration=2")
+	assertLogContains(t, events, "orchestration monitor iteration start iteration=1")
+	assertLogContains(t, events, "orchestration monitor iteration start iteration=2")
 	assertLogContains(t, events, "proposal monitor stopped: context canceled")
 }
 
@@ -143,8 +261,8 @@ func TestRunProposalsLoopContinuesAfterIterationError(t *testing.T) {
 	}
 
 	events := decodeEvents(t, logs.String())
-	assertLogContains(t, events, "proposal monitor iteration error iteration=1")
-	assertLogContains(t, events, "proposal monitor iteration start iteration=2")
+	assertLogContains(t, events, "orchestration monitor iteration error iteration=1")
+	assertLogContains(t, events, "orchestration monitor iteration start iteration=2")
 }
 
 func TestRunProposalsLoopStopsBeforeNextPassWhenContextCancelledDuringWait(t *testing.T) {
@@ -280,6 +398,29 @@ func TestBuildProposalInputProducesPRTitleFromTaskTitle(t *testing.T) {
 			t.Fatalf("prTitle = %q, want to contain fallback title %q", prTitle, input.Title)
 		}
 	})
+}
+
+func TestBuildApplyInputIncludesTaskPayloadAndBranchSource(t *testing.T) {
+	task := readyCodeTask("issue-1", "ENG-1", "Apply flow", taskmanager.PullRequest{
+		URL:    "https://github.com/example/repo/pull/42",
+		Branch: "feature/task",
+	})
+	task.Description = "Implement code."
+	task.Comments = []taskmanager.Comment{{Body: "Use existing patterns.", User: taskmanager.User{Name: "Dana"}}}
+
+	got, err := BuildApplyInput(task)
+	if err != nil {
+		t.Fatalf("BuildApplyInput() error = %v", err)
+	}
+	if got.TaskID != "issue-1" || got.Identifier != "ENG-1" || got.Title != "Apply flow" {
+		t.Fatalf("BuildApplyInput() = %#v", got)
+	}
+	if got.PRURL != "https://github.com/example/repo/pull/42" || got.BranchName != "feature/task" {
+		t.Fatalf("branch source = pr %q branch %q", got.PRURL, got.BranchName)
+	}
+	if !strings.Contains(got.AgentPrompt, "Comments:") || !strings.Contains(got.AgentPrompt, "Use existing patterns.") {
+		t.Fatalf("agent prompt = %q", got.AgentPrompt)
+	}
 }
 
 func TestRunProposalsOnceRequiresProposingInProgressState(t *testing.T) {
@@ -437,6 +578,16 @@ type recordingProposalRunner struct {
 	err    error
 }
 
+type recordingApplyRunner struct {
+	inputs []applyrunner.ApplyInput
+	err    error
+}
+
+func (runner *recordingApplyRunner) Run(ctx context.Context, input applyrunner.ApplyInput) error {
+	runner.inputs = append(runner.inputs, input)
+	return runner.err
+}
+
 func (runner *recordingProposalRunner) Run(ctx context.Context, input proposalrunner.ProposalInput) (string, error) {
 	runner.inputs = append(runner.inputs, input)
 	if runner.err != nil {
@@ -487,6 +638,10 @@ func assertLogContains(t *testing.T, events []logEvent, message string) {
 }
 
 func testOrchestrator(taskManager TaskManager, runner ProposalRunner, logs *bytes.Buffer) Orchestrator {
+	return testOrchestratorWithApply(taskManager, runner, &recordingApplyRunner{}, logs)
+}
+
+func testOrchestratorWithApply(taskManager TaskManager, runner ProposalRunner, applyRunner ApplyRunner, logs *bytes.Buffer) Orchestrator {
 	var logWriter ioWriter
 	if logs != nil {
 		logWriter = logs
@@ -497,9 +652,13 @@ func testOrchestrator(taskManager TaskManager, runner ProposalRunner, logs *byte
 			ReadyToProposeStateID:      "state-propose",
 			ProposingInProgressStateID: "state-proposing-progress",
 			NeedProposalReviewStateID:  "state-proposal-review",
+			ReadyToCodeStateID:         "state-code",
+			CodeInProgressStateID:      "state-code-progress",
+			NeedCodeReviewStateID:      "state-code-review",
 		},
 		TaskManager:    taskManager,
 		ProposalRunner: runner,
+		ApplyRunner:    applyRunner,
 		LogWriter:      logWriter,
 	}
 }
@@ -510,6 +669,16 @@ func readyTask(id string, identifier string, title string) taskmanager.Task {
 		Identifier: identifier,
 		Title:      title,
 		State:      taskmanager.WorkflowState{ID: "state-propose", Name: "Ready to Propose"},
+	}
+}
+
+func readyCodeTask(id string, identifier string, title string, pullRequests ...taskmanager.PullRequest) taskmanager.Task {
+	return taskmanager.Task{
+		ID:           id,
+		Identifier:   identifier,
+		Title:        title,
+		State:        taskmanager.WorkflowState{ID: "state-code", Name: "Ready to Code"},
+		PullRequests: pullRequests,
 	}
 }
 

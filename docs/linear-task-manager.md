@@ -8,7 +8,7 @@
 
 - читать задачи только из одного настроенного проекта Linear;
 - выбирать только задачи из управляемых state'ов `ready to propose`, `ready to code`, `ready to archive`;
-- возвращать данные задачи в форме, пригодной для `CoreOrch`: `id`, `identifier`, `title`, `description`, текущий `state`, `comments`;
+- возвращать данные задачи в форме, пригодной для `CoreOrch`: `id`, `identifier`, `title`, `description`, текущий `state`, `comments`, attached Pull Request URL для Apply;
 - выполнять write-операции обратно в Linear: `MoveTask`, `AddComment`, `AddPR`.
 
 Для review-этапов `TaskManager` не выбирает target state сам. `CoreOrch` должен взять нужный review state ID из конфига и явно вызвать `MoveTask(...)`, например для:
@@ -26,9 +26,9 @@
 - polling задач по расписанию;
 - dispatch задач в executor'ы;
 - orchestration retry / lease / locking;
-- чтение существующих PR association как обязательную часть read-модели.
+- получение branch name из GitHub metadata.
 
-Эти обязанности должны появиться в `CoreOrch` или в следующих change'ах.
+Branch name для Apply при необходимости определяет Apply runner через `gh pr view` по attached PR URL.
 
 ## Конфигурация
 
@@ -40,6 +40,9 @@
 - `LINEAR_STATE_READY_TO_PROPOSE_ID`
 - `LINEAR_STATE_READY_TO_CODE_ID`
 - `LINEAR_STATE_READY_TO_ARCHIVE_ID`
+- `LINEAR_STATE_PROPOSING_IN_PROGRESS_ID`
+- `LINEAR_STATE_CODE_IN_PROGRESS_ID`
+- `LINEAR_STATE_ARCHIVING_IN_PROGRESS_ID`
 - `LINEAR_STATE_NEED_PROPOSAL_REVIEW_ID`
 - `LINEAR_STATE_NEED_CODE_REVIEW_ID`
 - `LINEAR_STATE_NEED_ARCHIVE_REVIEW_ID`

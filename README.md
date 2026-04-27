@@ -1,27 +1,30 @@
 # orchv3
 
-`orchv3` — Go CLI для proposal-stage оркестрации. Утилита запускает постоянный мониторинг Linear-задач, готовых к proposal, создает OpenSpec proposal PR через Codex CLI, прикрепляет PR к задаче и переводит задачу на review.
+`orchv3` — Go CLI для proposal/apply оркестрации. Утилита запускает постоянный мониторинг Linear-задач, создает OpenSpec proposal PR для задач, готовых к proposal, и применяет принятые OpenSpec changes для задач, готовых к code.
 
 Детали proposal runner workflow и prerequisites вынесены в [docs/proposal-runner.md](docs/proposal-runner.md). Детали Linear-facing слоя описаны в [docs/linear-task-manager.md](docs/linear-task-manager.md).
 
 ## Что умеет CLI сейчас
 
-- запустить постоянный proposal monitor без аргументов CLI;
+- запустить постоянный orchestration monitor без аргументов CLI;
 - запустить proposal workflow во внешнем репозитории через `AgentExecutor`;
 - для Linear-задач в `Ready to Propose` создать proposal PR, прикрепить PR URL и перевести задачу в `Need Proposal Review`;
+- для Linear-задач в `Ready to Code` взять attached PR URL или branch, применить OpenSpec Apply в той же ветке и перевести задачу в `Need Code Review`;
 - писать структурные JSON Lines логи workflow в `stderr` или настроенный sink.
 
 Ручной запуск proposal по описанию задачи из args/stdin удален. Любые CLI-аргументы или непустой `stdin` возвращают usage error.
 
 ## Proposal Orchestration
 
-Default runtime связывает `CoreOrch`, `TaskManager` и `proposalrunner` в долгоживущий polling loop:
+Default runtime связывает `CoreOrch`, `TaskManager`, `proposalrunner` и `applyrunner` в долгоживущий polling loop:
 
 - `TaskManager` читает managed Linear tasks из одного настроенного project;
-- `CoreOrch` выбирает только задачи со state ID из `LINEAR_STATE_READY_TO_PROPOSE_ID`;
-- `CoreOrch` формирует input из `identifier`, `title`, `description` и `comments`;
+- `CoreOrch` маршрутизирует `LINEAR_STATE_READY_TO_PROPOSE_ID` в proposal workflow, а `LINEAR_STATE_READY_TO_CODE_ID` в Apply workflow;
+- `CoreOrch` формирует input из `identifier`, `title`, `description`, `comments` и, для Apply, attached PR URL или branch;
 - `proposalrunner` создает OpenSpec proposal PR во внешнем репозитории;
+- `applyrunner` клонирует репозиторий, переключается на ветку задачи, запускает OpenSpec Apply через Codex CLI, коммитит и пушит изменения без создания нового PR;
 - после успеха `CoreOrch` вызывает `TaskManager.AddPR(...)`, затем `TaskManager.MoveTask(...)` в `LINEAR_STATE_NEED_PROPOSAL_REVIEW_ID`.
+- после успешного Apply `CoreOrch` переводит задачу из `LINEAR_STATE_CODE_IN_PROGRESS_ID` в `LINEAR_STATE_NEED_CODE_REVIEW_ID`.
 - после каждого прохода monitor ждет `PROPOSAL_POLL_INTERVAL` и запускает следующий проход до остановки процесса.
 
 Если отдельный orchestration pass падает, monitor пишет structured error и продолжает следующий проход после polling interval. Если runner падает или Linear не смог прикрепить PR, задача не переводится в review state. Если PR уже прикреплен, но move task упал, ошибка логируется с контекстом задачи и PR URL.
@@ -35,7 +38,7 @@ Default runtime связывает `CoreOrch`, `TaskManager` и `proposalrunner`
 - `codex` для текущей реализации agent executor;
 - `gh`;
 - доступ к целевому GitHub-репозиторию и предварительная аутентификация `gh`;
-- Linear API token и настроенные workflow state IDs для proposal monitor;
+- Linear API token и настроенные workflow state IDs для orchestration monitor;
 - настроенный `.env` с runtime-параметрами.
 
 Go-модуль и зависимости зафиксированы в [go.mod](go.mod). Подробные требования к proposal-runner workflow описаны в [docs/proposal-runner.md](docs/proposal-runner.md).
@@ -54,7 +57,7 @@ Go-модуль и зависимости зафиксированы в [go.mod]
 - `PROPOSAL_BASE_BRANCH`, `PROPOSAL_REMOTE_NAME`, `PROPOSAL_BRANCH_PREFIX`, `PROPOSAL_PR_TITLE_PREFIX` — параметры git/GitHub workflow;
 - `PROPOSAL_GIT_PATH`, `PROPOSAL_CODEX_PATH`, `PROPOSAL_GH_PATH` — пути к внешним CLI; `PROPOSAL_CODEX_PATH` относится к текущей Codex-реализации `AgentExecutor`;
 - `PROPOSAL_CLEANUP_TEMP` — удалять ли временную директорию после выполнения;
-- `PROPOSAL_POLL_INTERVAL` — интервал между проходами proposal monitor, например `30s` или `1m`;
+- `PROPOSAL_POLL_INTERVAL` — интервал между проходами orchestration monitor, например `30s` или `1m`;
 - `LINEAR_API_URL`, `LINEAR_API_TOKEN`, `LINEAR_PROJECT_ID` — подключение к Linear и фильтр по проекту;
 - `LINEAR_STATE_READY_TO_PROPOSE_ID`, `LINEAR_STATE_READY_TO_CODE_ID`, `LINEAR_STATE_READY_TO_ARCHIVE_ID` — идентификаторы управляемых Linear state'ов для `TaskManager`;
 - `LINEAR_STATE_NEED_PROPOSAL_REVIEW_ID`, `LINEAR_STATE_NEED_CODE_REVIEW_ID`, `LINEAR_STATE_NEED_ARCHIVE_REVIEW_ID` — target state IDs для review-этапов, которые `CoreOrch` использует при вызове `TaskManager.MoveTask(...)`;
@@ -64,7 +67,7 @@ Go-модуль и зависимости зафиксированы в [go.mod]
 
 Перед первым запуском установите зависимости и подготовьте `.env`.
 
-### Proposal monitor
+### Orchestration monitor
 
 Этот режим сам берет задачи из Linear. `stdout` остается пустым; результат и ошибки видны в structured logs.
 
@@ -78,13 +81,15 @@ go run ./cmd/orchv3
 2. Убедитесь, что `.env` заполнен для `PROPOSAL_*`, `LINEAR_*`, `git`, `codex` и `gh`.
 3. Запустите `go run ./cmd/orchv3`.
 4. Проверьте, что в Linear к задаче прикрепился PR URL, а state сменился на `LINEAR_STATE_NEED_PROPOSAL_REVIEW_ID`.
+5. Для Apply подготовьте задачу в state из `LINEAR_STATE_READY_TO_CODE_ID` с attached Pull Request URL; после успешного прохода state должен смениться на `LINEAR_STATE_NEED_CODE_REVIEW_ID`, а изменения появиться в ветке PR.
 
 ## Ключевые директории
 
 - [cmd/orchv3](cmd/orchv3) — точка входа CLI;
 - [internal/config](internal/config) — загрузка и валидация конфигурации;
-- [internal/coreorch](internal/coreorch) — proposal-stage orchestration layer;
+- [internal/coreorch](internal/coreorch) — orchestration layer для proposal и Apply stage;
 - [internal/proposalrunner](internal/proposalrunner) — orchestration proposal workflow и текущая Codex-реализация `AgentExecutor`;
+- [internal/applyrunner](internal/applyrunner) — Apply workflow для реализации OpenSpec changes в существующей ветке задачи;
 - [internal/taskmanager](internal/taskmanager) — Linear-facing слой для чтения и обновления задач;
 - [docs](docs) — дополнительная документация;
 - [openspec](openspec) — спецификации и changes.

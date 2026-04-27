@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -38,6 +39,13 @@ query ManagedIssues($projectId: ID!, $stateIds: [ID!]!, $after: String, $first: 
       state {
         id
         name
+      }
+      attachments(first: 50) {
+        nodes {
+          id
+          title
+          url
+        }
       }
     }
     pageInfo {
@@ -156,7 +164,8 @@ func (client *LinearClient) GetTasks(ctx context.Context, projectID string, stat
 					ID:   strings.TrimSpace(node.State.ID),
 					Name: strings.TrimSpace(node.State.Name),
 				},
-				Comments: []Comment{},
+				Comments:     []Comment{},
+				PullRequests: pullRequestsFromAttachments(node.Attachments.Nodes),
 			}
 			if !isManagedTask(task, projectID, stateIDs) {
 				continue
@@ -427,6 +436,15 @@ type issueNode struct {
 		ID   string `json:"id"`
 		Name string `json:"name"`
 	} `json:"state"`
+	Attachments struct {
+		Nodes []attachmentNode `json:"nodes"`
+	} `json:"attachments"`
+}
+
+type attachmentNode struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	URL   string `json:"url"`
 }
 
 type commentNode struct {
@@ -439,6 +457,32 @@ type commentNode struct {
 		DisplayName string `json:"displayName"`
 		Email       string `json:"email"`
 	} `json:"user"`
+}
+
+func pullRequestsFromAttachments(nodes []attachmentNode) []PullRequest {
+	pullRequests := make([]PullRequest, 0, len(nodes))
+	for _, node := range nodes {
+		if strings.TrimSpace(node.Title) != pullRequestTitle {
+			continue
+		}
+
+		url := strings.TrimSpace(node.URL)
+		if url == "" {
+			continue
+		}
+
+		pullRequests = append(pullRequests, PullRequest{URL: url})
+	}
+
+	sort.SliceStable(pullRequests, func(i, j int) bool {
+		return pullRequests[i].URL < pullRequests[j].URL
+	})
+
+	if pullRequests == nil {
+		return []PullRequest{}
+	}
+
+	return pullRequests
 }
 
 type pageInfo struct {

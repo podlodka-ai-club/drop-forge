@@ -2,9 +2,11 @@ package coreorch
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	"orchv3/internal/applyrunner"
@@ -73,23 +75,42 @@ func (orch *Orchestrator) RunProposalsOnce(ctx context.Context) error {
 	proposalCount := 0
 	applyCount := 0
 	archiveCount := 0
+	var wg sync.WaitGroup
+	var errsMu sync.Mutex
+	var errs []error
+	collectErr := func(err error) {
+		if err == nil {
+			return
+		}
+		errsMu.Lock()
+		defer errsMu.Unlock()
+		errs = append(errs, err)
+	}
+
 	for _, task := range tasks {
+		task := task
 		switch task.State.ID {
 		case orch.Config.ReadyToProposeStateID:
 			proposalCount++
-			if err := orch.processProposalTask(ctx, logger, task); err != nil {
-				return err
-			}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				collectErr(orch.processProposalTask(ctx, logger, task))
+			}()
 		case orch.Config.ReadyToCodeStateID:
 			applyCount++
-			if err := orch.processApplyTask(ctx, logger, task); err != nil {
-				return err
-			}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				collectErr(orch.processApplyTask(ctx, logger, task))
+			}()
 		case orch.Config.ReadyToArchiveStateID:
 			archiveCount++
-			if err := orch.processArchiveTask(ctx, logger, task); err != nil {
-				return err
-			}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				collectErr(orch.processArchiveTask(ctx, logger, task))
+			}()
 		default:
 			logger.Infof(
 				module,
@@ -111,7 +132,8 @@ func (orch *Orchestrator) RunProposalsOnce(ctx context.Context) error {
 		logger.Infof(module, "no ready-to-archive tasks found")
 	}
 
-	return nil
+	wg.Wait()
+	return errors.Join(errs...)
 }
 
 func (orch *Orchestrator) RunProposalsLoop(ctx context.Context, interval time.Duration) error {
@@ -421,7 +443,18 @@ func writerOrDiscard(writer io.Writer) io.Writer {
 		return io.Discard
 	}
 
-	return writer
+	return &lockedWriter{writer: writer}
+}
+
+type lockedWriter struct {
+	mu     sync.Mutex
+	writer io.Writer
+}
+
+func (writer *lockedWriter) Write(p []byte) (int, error) {
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+	return writer.writer.Write(p)
 }
 
 func waitInterval(ctx context.Context, interval time.Duration) error {

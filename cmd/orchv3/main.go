@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"orchv3/internal/commandrunner"
 	"orchv3/internal/config"
@@ -15,14 +16,12 @@ import (
 	"orchv3/internal/taskmanager"
 )
 
-const orchestrateProposalsCommand = "orchestrate-proposals"
-
 type singleProposalRunner interface {
 	Run(ctx context.Context, input proposalrunner.ProposalInput) (string, error)
 }
 
-type proposalOrchestrator interface {
-	RunProposalsOnce(ctx context.Context) error
+type proposalMonitor interface {
+	RunProposalsLoop(ctx context.Context, interval time.Duration) error
 }
 
 type appDeps struct {
@@ -30,7 +29,7 @@ type appDeps struct {
 	buildLogger             func(stderr io.Writer, cfg config.Config, warnOut io.Writer) (steplog.Logger, io.Writer, io.Closer, error)
 	newProposalRunner       func(cfg config.ProposalRunnerConfig, service string, logOut io.Writer) singleProposalRunner
 	newTaskManager          func(cfg config.LinearTaskManagerConfig, logOut io.Writer) coreorch.TaskManager
-	newProposalOrchestrator func(cfg config.Config, tasks coreorch.TaskManager, runner coreorch.ProposalRunner, logOut io.Writer) proposalOrchestrator
+	newProposalOrchestrator func(cfg config.Config, tasks coreorch.TaskManager, runner coreorch.ProposalRunner, logOut io.Writer) proposalMonitor
 }
 
 func main() {
@@ -42,6 +41,13 @@ func run(args []string, stdin *os.File, stdout io.Writer, stderr io.Writer) int 
 }
 
 func runWithDeps(args []string, stdin *os.File, stdout io.Writer, stderr io.Writer, deps appDeps) int {
+	_ = stdout
+
+	if err := rejectManualProposalInput(args, stdin); err != nil {
+		steplog.New(stderr).Errorf("cli", "%v", err)
+		return 1
+	}
+
 	cfg, err := deps.loadConfig()
 	if err != nil {
 		steplog.New(stderr).Errorf("cli", "load config: %v", err)
@@ -57,73 +63,48 @@ func runWithDeps(args []string, stdin *os.File, stdout io.Writer, stderr io.Writ
 		defer func() { _ = closer.Close() }()
 	}
 
-	if isOrchestrateProposalsCommand(args) {
-		taskManager := deps.newTaskManager(cfg.TaskManager, logOut)
-		runner := deps.newProposalRunner(cfg.ProposalRunner, cfg.AppName, logOut)
-		orchestrator := deps.newProposalOrchestrator(cfg, taskManager, runner, logOut)
-		if err := orchestrator.RunProposalsOnce(context.Background()); err != nil {
-			logger.Errorf("cli", "run proposal orchestration: %v", err)
-			return 1
-		}
-
-		return 0
-	}
-
-	taskDescription, err := readTaskDescription(args, stdin)
-	if err != nil {
-		logger.Errorf("cli", "read task description: %v", err)
-		return 1
-	}
-
-	if taskDescription != "" {
-		runner := deps.newProposalRunner(cfg.ProposalRunner, cfg.AppName, logOut)
-		prURL, err := runner.Run(context.Background(), proposalrunner.ProposalInput{
-			Title:       taskDescription,
-			AgentPrompt: taskDescription,
-		})
-		if err != nil {
-			logger.Errorf("cli", "run proposal workflow: %v", err)
-			return 1
-		}
-
-		fmt.Fprintln(stdout, prURL)
-		return 0
-	}
-
+	taskManager := deps.newTaskManager(cfg.TaskManager, logOut)
+	runner := deps.newProposalRunner(cfg.ProposalRunner, cfg.AppName, logOut)
+	orchestrator := deps.newProposalOrchestrator(cfg, taskManager, runner, logOut)
 	logger.Infof(
 		"cli",
-		"%s starting in %s on port %d",
+		"%s starting proposal monitor in %s on port %d interval=%s",
 		cfg.AppName,
 		cfg.AppEnv,
 		cfg.HTTPPort,
+		cfg.ProposalPollInterval,
 	)
+	if err := orchestrator.RunProposalsLoop(context.Background(), cfg.ProposalPollInterval); err != nil {
+		logger.Errorf("cli", "run proposal monitor: %v", err)
+		return 1
+	}
+
 	return 0
 }
 
-func readTaskDescription(args []string, stdin *os.File) (string, error) {
+func rejectManualProposalInput(args []string, stdin *os.File) error {
 	if len(args) > 0 {
-		return strings.TrimSpace(strings.Join(args, " ")), nil
+		return fmt.Errorf("usage error: manual proposal execution was removed; run without arguments to start the proposal monitor")
 	}
 
 	stat, err := stdin.Stat()
 	if err != nil {
-		return "", fmt.Errorf("stat stdin: %w", err)
+		return fmt.Errorf("stat stdin: %w", err)
 	}
 
 	if stat.Mode()&os.ModeCharDevice != 0 {
-		return "", nil
+		return nil
 	}
 
 	content, err := io.ReadAll(stdin)
 	if err != nil {
-		return "", fmt.Errorf("read stdin: %w", err)
+		return fmt.Errorf("read stdin: %w", err)
+	}
+	if strings.TrimSpace(string(content)) != "" {
+		return fmt.Errorf("usage error: manual proposal execution was removed; run without stdin input to start the proposal monitor")
 	}
 
-	return strings.TrimSpace(string(content)), nil
-}
-
-func isOrchestrateProposalsCommand(args []string) bool {
-	return len(args) == 1 && args[0] == orchestrateProposalsCommand
+	return nil
 }
 
 func defaultDeps() appDeps {
@@ -143,7 +124,7 @@ func defaultDeps() appDeps {
 			manager.LogWriter = logOut
 			return manager
 		},
-		newProposalOrchestrator: func(cfg config.Config, tasks coreorch.TaskManager, runner coreorch.ProposalRunner, logOut io.Writer) proposalOrchestrator {
+		newProposalOrchestrator: func(cfg config.Config, tasks coreorch.TaskManager, runner coreorch.ProposalRunner, logOut io.Writer) proposalMonitor {
 			return &coreorch.Orchestrator{
 				Config: coreorch.Config{
 					ReadyToProposeStateID:      cfg.TaskManager.ReadyToProposeStateID,

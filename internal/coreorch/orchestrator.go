@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"orchv3/internal/proposalrunner"
 	"orchv3/internal/steplog"
@@ -36,6 +37,8 @@ type Orchestrator struct {
 	Service        string
 	LogWriter      io.Writer
 }
+
+type WaitFunc func(ctx context.Context, interval time.Duration) error
 
 func (orch *Orchestrator) RunProposalsOnce(ctx context.Context) error {
 	if err := orch.validate(); err != nil {
@@ -73,6 +76,43 @@ func (orch *Orchestrator) RunProposalsOnce(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func (orch *Orchestrator) RunProposalsLoop(ctx context.Context, interval time.Duration) error {
+	return orch.runProposalsLoop(ctx, interval, waitInterval)
+}
+
+func (orch *Orchestrator) runProposalsLoop(ctx context.Context, interval time.Duration, wait WaitFunc) error {
+	if interval <= 0 {
+		return fmt.Errorf("proposal poll interval must be positive, got %s", interval)
+	}
+	if wait == nil {
+		return fmt.Errorf("proposal poll wait func must not be nil")
+	}
+	if err := orch.validate(); err != nil {
+		return err
+	}
+
+	logger := steplog.NewWithService(writerOrDiscard(orch.LogWriter), orch.Service)
+	for iteration := 1; ; iteration++ {
+		if err := ctx.Err(); err != nil {
+			logger.Infof(module, "proposal monitor stopped: %v", err)
+			return nil
+		}
+
+		logger.Infof(module, "proposal monitor iteration start iteration=%d", iteration)
+		if err := orch.RunProposalsOnce(ctx); err != nil {
+			logger.Errorf(module, "proposal monitor iteration error iteration=%d: %v", iteration, err)
+		}
+
+		if err := wait(ctx, interval); err != nil {
+			if ctx.Err() != nil {
+				logger.Infof(module, "proposal monitor stopped: %v", ctx.Err())
+				return nil
+			}
+			return fmt.Errorf("wait proposal poll interval: %w", err)
+		}
+	}
 }
 
 func (orch *Orchestrator) processTask(ctx context.Context, logger steplog.Logger, task taskmanager.Task) error {
@@ -204,4 +244,16 @@ func writerOrDiscard(writer io.Writer) io.Writer {
 	}
 
 	return writer
+}
+
+func waitInterval(ctx context.Context, interval time.Duration) error {
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }

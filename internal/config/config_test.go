@@ -20,6 +20,7 @@ var envKeys = []string{
 	"PROPOSAL_BRANCH_PREFIX",
 	"PROPOSAL_PR_TITLE_PREFIX",
 	"PROPOSAL_CLEANUP_TEMP",
+	"PROPOSAL_POLL_INTERVAL",
 	"PROPOSAL_GIT_PATH",
 	"PROPOSAL_CODEX_PATH",
 	"PROPOSAL_GH_PATH",
@@ -78,6 +79,9 @@ func TestLoadUsesDefaults(t *testing.T) {
 
 	if cfg.TaskManager.APIURL != defaultLinearAPIURL {
 		t.Fatalf("TaskManager.APIURL = %q, want %q", cfg.TaskManager.APIURL, defaultLinearAPIURL)
+	}
+	if cfg.ProposalPollInterval != defaultProposalPollInterval {
+		t.Fatalf("ProposalPollInterval = %v, want %v", cfg.ProposalPollInterval, defaultProposalPollInterval)
 	}
 	if cfg.Logstash.Addr != "" {
 		t.Fatalf("Logstash.Addr = %q, want empty by default", cfg.Logstash.Addr)
@@ -155,6 +159,7 @@ func TestLoadReadsEnvironment(t *testing.T) {
 	t.Setenv("PROPOSAL_BRANCH_PREFIX", "automation/proposal")
 	t.Setenv("PROPOSAL_PR_TITLE_PREFIX", "Spec:")
 	t.Setenv("PROPOSAL_CLEANUP_TEMP", "true")
+	t.Setenv("PROPOSAL_POLL_INTERVAL", "1m")
 	t.Setenv("PROPOSAL_GIT_PATH", "/usr/local/bin/git")
 	t.Setenv("PROPOSAL_CODEX_PATH", "/usr/local/bin/codex")
 	t.Setenv("PROPOSAL_GH_PATH", "/usr/local/bin/gh")
@@ -194,6 +199,9 @@ func TestLoadReadsEnvironment(t *testing.T) {
 
 	if cfg.OpenAIAPIKey != "secret" {
 		t.Fatalf("OpenAIAPIKey = %q, want %q", cfg.OpenAIAPIKey, "secret")
+	}
+	if cfg.ProposalPollInterval != time.Minute {
+		t.Fatalf("ProposalPollInterval = %v, want %v", cfg.ProposalPollInterval, time.Minute)
 	}
 
 	runnerCfg := cfg.ProposalRunner
@@ -277,6 +285,26 @@ func TestLoadReturnsErrorForInvalidHTTPPort(t *testing.T) {
 func TestLoadReturnsErrorForInvalidCleanupFlag(t *testing.T) {
 	isolateEnv(t)
 	t.Setenv("PROPOSAL_CLEANUP_TEMP", "sometimes")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Load() error = nil, want non-nil")
+	}
+}
+
+func TestLoadReturnsErrorForInvalidProposalPollInterval(t *testing.T) {
+	isolateEnv(t)
+	t.Setenv("PROPOSAL_POLL_INTERVAL", "not-a-duration")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Load() error = nil, want non-nil")
+	}
+}
+
+func TestLoadReturnsErrorForNonPositiveProposalPollInterval(t *testing.T) {
+	isolateEnv(t)
+	t.Setenv("PROPOSAL_POLL_INTERVAL", "0")
 
 	_, err := Load()
 	if err == nil {

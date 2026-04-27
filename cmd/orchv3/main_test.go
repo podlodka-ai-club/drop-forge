@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"orchv3/internal/config"
 	"orchv3/internal/coreorch"
@@ -16,18 +17,17 @@ import (
 	"orchv3/internal/taskmanager"
 )
 
-func TestReadTaskDescriptionFromArgs(t *testing.T) {
-	got, err := readTaskDescription([]string{"Add", "proposal", "flow"}, os.Stdin)
-	if err != nil {
-		t.Fatalf("readTaskDescription() returned error: %v", err)
+func TestRejectManualProposalInputFromArgs(t *testing.T) {
+	err := rejectManualProposalInput([]string{"Add", "proposal", "flow"}, os.Stdin)
+	if err == nil {
+		t.Fatal("rejectManualProposalInput() error = nil, want non-nil")
 	}
-
-	if got != "Add proposal flow" {
-		t.Fatalf("description = %q, want %q", got, "Add proposal flow")
+	if !strings.Contains(err.Error(), "manual proposal execution was removed") {
+		t.Fatalf("error = %q, want manual proposal removal context", err.Error())
 	}
 }
 
-func TestReadTaskDescriptionFromPipe(t *testing.T) {
+func TestRejectManualProposalInputFromPipe(t *testing.T) {
 	readPipe, writePipe, err := os.Pipe()
 	if err != nil {
 		t.Fatalf("create pipe: %v", err)
@@ -43,27 +43,28 @@ func TestReadTaskDescriptionFromPipe(t *testing.T) {
 		t.Fatalf("close write pipe: %v", err)
 	}
 
-	got, err := readTaskDescription(nil, readPipe)
-	if err != nil {
-		t.Fatalf("readTaskDescription() returned error: %v", err)
+	err = rejectManualProposalInput(nil, readPipe)
+	if err == nil {
+		t.Fatal("rejectManualProposalInput() error = nil, want non-nil")
 	}
-
-	if got != "Add stdin task" {
-		t.Fatalf("description = %q, want %q", got, "Add stdin task")
+	if !strings.Contains(err.Error(), "manual proposal execution was removed") {
+		t.Fatalf("error = %q, want manual proposal removal context", err.Error())
 	}
 }
 
-func TestRunWithoutTaskLogsStartupAsJSON(t *testing.T) {
-	t.Setenv("APP_NAME", "orchv3-test")
-	t.Setenv("APP_ENV", "test")
-	t.Setenv("HTTP_PORT", "19090")
-
+func TestRunWithoutTaskStartsProposalMonitor(t *testing.T) {
 	stdin := emptyTempFile(t)
 	defer stdin.Close()
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	exitCode := run(nil, stdin, &stdout, &stderr)
+	deps := testDeps()
+	monitor := &fakeProposalMonitor{}
+	deps.newProposalOrchestrator = func(cfg config.Config, tasks coreorch.TaskManager, runner coreorch.ProposalRunner, logOut io.Writer) proposalMonitor {
+		return monitor
+	}
+
+	exitCode := runWithDeps(nil, stdin, &stdout, &stderr, deps)
 	if exitCode != 0 {
 		t.Fatalf("exitCode = %d, want 0", exitCode)
 	}
@@ -78,8 +79,14 @@ func TestRunWithoutTaskLogsStartupAsJSON(t *testing.T) {
 	if event.Type != "info" {
 		t.Fatalf("type = %q, want %q", event.Type, "info")
 	}
-	if !strings.Contains(event.Message, "orchv3-test starting in test on port 19090") {
+	if !strings.Contains(event.Message, "orchv3-test starting proposal monitor") {
 		t.Fatalf("message = %q, want startup message", event.Message)
+	}
+	if monitor.calls != 1 {
+		t.Fatalf("monitor calls = %d, want 1", monitor.calls)
+	}
+	if monitor.interval != 45*time.Second {
+		t.Fatalf("monitor interval = %v, want 45s", monitor.interval)
 	}
 }
 
@@ -104,7 +111,7 @@ func TestRunConfigErrorLogsJSONError(t *testing.T) {
 	}
 }
 
-func TestRunOrchestrateProposalsWiresDependenciesAndKeepsStdoutEmpty(t *testing.T) {
+func TestRunDefaultWiresDependenciesAndKeepsStdoutEmpty(t *testing.T) {
 	stdin := emptyTempFile(t)
 	defer stdin.Close()
 
@@ -123,15 +130,15 @@ func TestRunOrchestrateProposalsWiresDependenciesAndKeepsStdoutEmpty(t *testing.
 		state.runnerLogOut = logOut
 		return &fakeSingleProposalRunner{prURL: "https://github.com/example/repo/pull/1"}
 	}
-	deps.newProposalOrchestrator = func(cfg config.Config, tasks coreorch.TaskManager, runner coreorch.ProposalRunner, logOut io.Writer) proposalOrchestrator {
+	deps.newProposalOrchestrator = func(cfg config.Config, tasks coreorch.TaskManager, runner coreorch.ProposalRunner, logOut io.Writer) proposalMonitor {
 		state.orchestratorConfig = cfg
 		state.orchestratorLogOut = logOut
 		state.orchestratorTaskManager = tasks
 		state.orchestratorRunner = runner
-		return &fakeProposalOrchestrator{}
+		return &fakeProposalMonitor{}
 	}
 
-	exitCode := runWithDeps([]string{orchestrateProposalsCommand}, stdin, &stdout, &stderr, deps)
+	exitCode := runWithDeps(nil, stdin, &stdout, &stderr, deps)
 	if exitCode != 0 {
 		t.Fatalf("exitCode = %d, want 0", exitCode)
 	}
@@ -182,7 +189,7 @@ func TestDefaultProposalOrchestratorWiresProposingInProgressState(t *testing.T) 
 	}
 }
 
-func TestRunDirectProposalModeStillPrintsPRURL(t *testing.T) {
+func TestRunArgsRejectsManualProposalModeWithoutCallingRunner(t *testing.T) {
 	stdin := emptyTempFile(t)
 	defer stdin.Close()
 
@@ -195,24 +202,59 @@ func TestRunDirectProposalModeStillPrintsPRURL(t *testing.T) {
 	}
 
 	exitCode := runWithDeps([]string{"Add", "proposal", "flow"}, stdin, &stdout, &stderr, deps)
-	if exitCode != 0 {
-		t.Fatalf("exitCode = %d, want 0", exitCode)
+	if exitCode != 1 {
+		t.Fatalf("exitCode = %d, want 1", exitCode)
 	}
-	if stdout.String() != "https://github.com/example/repo/pull/42\n" {
-		t.Fatalf("stdout = %q", stdout.String())
+	if stdout.String() != "" {
+		t.Fatalf("stdout = %q, want empty", stdout.String())
 	}
-	if len(runner.inputs) != 1 {
-		t.Fatalf("runner inputs len = %d, want 1", len(runner.inputs))
+	if len(runner.inputs) != 0 {
+		t.Fatalf("runner inputs len = %d, want 0", len(runner.inputs))
 	}
-	got := runner.inputs[0]
-	if got.Title != "Add proposal flow" {
-		t.Fatalf("runner inputs[0].Title = %q, want %q", got.Title, "Add proposal flow")
+
+	event := decodeLogEvent(t, stderr.String())
+	if !strings.Contains(event.Message, "manual proposal execution was removed") {
+		t.Fatalf("message = %q, want removal usage error", event.Message)
 	}
-	if got.AgentPrompt != "Add proposal flow" {
-		t.Fatalf("runner inputs[0].AgentPrompt = %q, want %q", got.AgentPrompt, "Add proposal flow")
+}
+
+func TestRunStdinRejectsManualProposalModeWithoutCallingRunner(t *testing.T) {
+	readPipe, writePipe, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create pipe: %v", err)
 	}
-	if got.Identifier != "" {
-		t.Fatalf("runner inputs[0].Identifier = %q, want empty", got.Identifier)
+	t.Cleanup(func() {
+		readPipe.Close()
+	})
+	if _, err := writePipe.WriteString("manual task\n"); err != nil {
+		t.Fatalf("write pipe: %v", err)
+	}
+	if err := writePipe.Close(); err != nil {
+		t.Fatalf("close write pipe: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	runner := &fakeSingleProposalRunner{prURL: "https://github.com/example/repo/pull/42"}
+	deps := testDeps()
+	deps.newProposalRunner = func(cfg config.ProposalRunnerConfig, service string, logOut io.Writer) singleProposalRunner {
+		return runner
+	}
+
+	exitCode := runWithDeps(nil, readPipe, &stdout, &stderr, deps)
+	if exitCode != 1 {
+		t.Fatalf("exitCode = %d, want 1", exitCode)
+	}
+	if stdout.String() != "" {
+		t.Fatalf("stdout = %q, want empty", stdout.String())
+	}
+	if len(runner.inputs) != 0 {
+		t.Fatalf("runner inputs len = %d, want 0", len(runner.inputs))
+	}
+
+	event := decodeLogEvent(t, stderr.String())
+	if !strings.Contains(event.Message, "manual proposal execution was removed") {
+		t.Fatalf("message = %q, want removal usage error", event.Message)
 	}
 }
 
@@ -284,12 +326,16 @@ func (manager *fakeTaskManager) MoveTask(ctx context.Context, taskID string, sta
 	return nil
 }
 
-type fakeProposalOrchestrator struct {
-	err error
+type fakeProposalMonitor struct {
+	calls    int
+	interval time.Duration
+	err      error
 }
 
-func (orchestrator *fakeProposalOrchestrator) RunProposalsOnce(ctx context.Context) error {
-	return orchestrator.err
+func (monitor *fakeProposalMonitor) RunProposalsLoop(ctx context.Context, interval time.Duration) error {
+	monitor.calls++
+	monitor.interval = interval
+	return monitor.err
 }
 
 func testDeps() appDeps {
@@ -300,6 +346,7 @@ func testDeps() appDeps {
 				ProposalRunner: config.ProposalRunnerConfig{
 					RepositoryURL: "git@github.com:example/repo.git",
 				},
+				ProposalPollInterval: 45 * time.Second,
 				TaskManager: config.LinearTaskManagerConfig{
 					ProjectID:                  "project-123",
 					ReadyToProposeStateID:      "state-propose",
@@ -317,8 +364,8 @@ func testDeps() appDeps {
 		newTaskManager: func(cfg config.LinearTaskManagerConfig, logOut io.Writer) coreorch.TaskManager {
 			return &fakeTaskManager{}
 		},
-		newProposalOrchestrator: func(cfg config.Config, tasks coreorch.TaskManager, runner coreorch.ProposalRunner, logOut io.Writer) proposalOrchestrator {
-			return &fakeProposalOrchestrator{}
+		newProposalOrchestrator: func(cfg config.Config, tasks coreorch.TaskManager, runner coreorch.ProposalRunner, logOut io.Writer) proposalMonitor {
+			return &fakeProposalMonitor{}
 		},
 	}
 }

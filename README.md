@@ -1,32 +1,30 @@
 # orchv3
 
-`orchv3` — Go CLI для proposal-stage оркестрации. Утилита умеет запускать proposal-runner напрямую по описанию задачи через внутренний `AgentExecutor` или выполнить один orchestration pass: найти в Linear задачи, готовые к proposal, создать OpenSpec proposal PR через Codex CLI, прикрепить PR к задаче и перевести задачу на review.
+`orchv3` — Go CLI для proposal-stage оркестрации. Утилита запускает постоянный мониторинг Linear-задач, готовых к proposal, создает OpenSpec proposal PR через Codex CLI, прикрепляет PR к задаче и переводит задачу на review.
 
-Детали single-run proposal workflow и prerequisites вынесены в [docs/proposal-runner.md](docs/proposal-runner.md). Детали Linear-facing слоя описаны в [docs/linear-task-manager.md](docs/linear-task-manager.md).
+Детали proposal runner workflow и prerequisites вынесены в [docs/proposal-runner.md](docs/proposal-runner.md). Детали Linear-facing слоя описаны в [docs/linear-task-manager.md](docs/linear-task-manager.md).
 
 ## Что умеет CLI сейчас
 
-- запустить direct proposal-runner по описанию задачи из аргументов командной строки;
-- запустить direct proposal-runner по описанию задачи из `stdin`;
+- запустить постоянный proposal monitor без аргументов CLI;
 - запустить proposal workflow во внешнем репозитории через `AgentExecutor`;
-- вывести итоговый PR URL direct proposal-runner в `stdout`;
-- выполнить один pass proposal orchestration через `orchestrate-proposals`;
 - для Linear-задач в `Ready to Propose` создать proposal PR, прикрепить PR URL и перевести задачу в `Need Proposal Review`;
 - писать структурные JSON Lines логи workflow в `stderr` или настроенный sink.
 
-Если запустить CLI без аргументов и без данных в `stdin`, proposal workflow не стартует.
+Ручной запуск proposal по описанию задачи из args/stdin удален. Любые CLI-аргументы или непустой `stdin` возвращают usage error.
 
 ## Proposal Orchestration
 
-Режим `orchestrate-proposals` связывает `CoreOrch`, `TaskManager` и `proposalrunner`:
+Default runtime связывает `CoreOrch`, `TaskManager` и `proposalrunner` в долгоживущий polling loop:
 
 - `TaskManager` читает managed Linear tasks из одного настроенного project;
 - `CoreOrch` выбирает только задачи со state ID из `LINEAR_STATE_READY_TO_PROPOSE_ID`;
 - `CoreOrch` формирует input из `identifier`, `title`, `description` и `comments`;
 - `proposalrunner` создает OpenSpec proposal PR во внешнем репозитории;
 - после успеха `CoreOrch` вызывает `TaskManager.AddPR(...)`, затем `TaskManager.MoveTask(...)` в `LINEAR_STATE_NEED_PROPOSAL_REVIEW_ID`.
+- после каждого прохода monitor ждет `PROPOSAL_POLL_INTERVAL` и запускает следующий проход до остановки процесса.
 
-Если runner падает или Linear не смог прикрепить PR, задача не переводится в review state. Если PR уже прикреплен, но move task упал, команда завершится ошибкой с контекстом задачи и PR URL.
+Если отдельный orchestration pass падает, monitor пишет structured error и продолжает следующий проход после polling interval. Если runner падает или Linear не смог прикрепить PR, задача не переводится в review state. Если PR уже прикреплен, но move task упал, ошибка логируется с контекстом задачи и PR URL.
 
 ## Зависимости
 
@@ -37,7 +35,7 @@
 - `codex` для текущей реализации agent executor;
 - `gh`;
 - доступ к целевому GitHub-репозиторию и предварительная аутентификация `gh`;
-- Linear API token и настроенные workflow state IDs для режима `orchestrate-proposals`;
+- Linear API token и настроенные workflow state IDs для proposal monitor;
 - настроенный `.env` с runtime-параметрами.
 
 Go-модуль и зависимости зафиксированы в [go.mod](go.mod). Подробные требования к proposal-runner workflow описаны в [docs/proposal-runner.md](docs/proposal-runner.md).
@@ -56,6 +54,7 @@ Go-модуль и зависимости зафиксированы в [go.mod]
 - `PROPOSAL_BASE_BRANCH`, `PROPOSAL_REMOTE_NAME`, `PROPOSAL_BRANCH_PREFIX`, `PROPOSAL_PR_TITLE_PREFIX` — параметры git/GitHub workflow;
 - `PROPOSAL_GIT_PATH`, `PROPOSAL_CODEX_PATH`, `PROPOSAL_GH_PATH` — пути к внешним CLI; `PROPOSAL_CODEX_PATH` относится к текущей Codex-реализации `AgentExecutor`;
 - `PROPOSAL_CLEANUP_TEMP` — удалять ли временную директорию после выполнения;
+- `PROPOSAL_POLL_INTERVAL` — интервал между проходами proposal monitor, например `30s` или `1m`;
 - `LINEAR_API_URL`, `LINEAR_API_TOKEN`, `LINEAR_PROJECT_ID` — подключение к Linear и фильтр по проекту;
 - `LINEAR_STATE_READY_TO_PROPOSE_ID`, `LINEAR_STATE_READY_TO_CODE_ID`, `LINEAR_STATE_READY_TO_ARCHIVE_ID` — идентификаторы управляемых Linear state'ов для `TaskManager`;
 - `LINEAR_STATE_NEED_PROPOSAL_REVIEW_ID`, `LINEAR_STATE_NEED_CODE_REVIEW_ID`, `LINEAR_STATE_NEED_ARCHIVE_REVIEW_ID` — target state IDs для review-этапов, которые `CoreOrch` использует при вызове `TaskManager.MoveTask(...)`;
@@ -65,40 +64,19 @@ Go-модуль и зависимости зафиксированы в [go.mod]
 
 Перед первым запуском установите зависимости и подготовьте `.env`.
 
-### Direct proposal-runner
-
-Этот режим принимает готовое описание задачи и печатает URL созданного PR в `stdout`.
-
-Запуск с описанием задачи в аргументах:
-
-```bash
-go run ./cmd/orchv3 "Добавить сценарий ..."
-```
-
-Запуск с передачей задачи через `stdin`:
-
-```bash
-printf '%s\n' "Добавить сценарий ..." | go run ./cmd/orchv3
-```
-
-При успешном выполнении:
-
-- `stdout` содержит только URL созданного pull request, чтобы результат было удобно использовать в скриптах;
-- `stderr` содержит пошаговые логи workflow (`temp`, `git`, `codex`, `github`) и сообщения CLI.
-
-### Proposal orchestration pass
+### Proposal monitor
 
 Этот режим сам берет задачи из Linear. `stdout` остается пустым; результат и ошибки видны в structured logs.
 
 ```bash
-go run ./cmd/orchv3 orchestrate-proposals
+go run ./cmd/orchv3
 ```
 
 Минимальная ручная проверка:
 
 1. В Linear подготовьте задачу в state, чей ID указан в `LINEAR_STATE_READY_TO_PROPOSE_ID`.
 2. Убедитесь, что `.env` заполнен для `PROPOSAL_*`, `LINEAR_*`, `git`, `codex` и `gh`.
-3. Запустите `go run ./cmd/orchv3 orchestrate-proposals`.
+3. Запустите `go run ./cmd/orchv3`.
 4. Проверьте, что в Linear к задаче прикрепился PR URL, а state сменился на `LINEAR_STATE_NEED_PROPOSAL_REVIEW_ID`.
 
 ## Ключевые директории

@@ -1,20 +1,16 @@
 # Proposal runner
 
-`orchv3` может принять описание задачи аргументами CLI или через stdin, создать OpenSpec proposal во внешнем репозитории через внутренний `AgentExecutor` и вернуть URL pull request. Сейчас единственная реализация `AgentExecutor` запускает Codex CLI.
+`orchv3` запускает proposal runner только из orchestration runtime: `CoreOrch` берет Linear-задачи из `Ready to Propose`, строит `ProposalInput`, а внутренний `AgentExecutor` создает OpenSpec proposal во внешнем репозитории. Сейчас единственная реализация `AgentExecutor` запускает Codex CLI.
 
 ## Запуск
 
 ```bash
-orchv3 "Добавить сценарий ..."
+orchv3
 ```
 
-или:
+CLI запускается без аргументов и стартует постоянный proposal monitor. `stdout` остается пустым. Логи monitor-а и шагов `temp`, `git`, `codex` и `github` печатаются в stderr или настроенный log sink. Модуль `codex` относится к текущей реализации agent executor.
 
-```bash
-printf '%s\n' "Добавить сценарий ..." | orchv3
-```
-
-При запуске workflow итоговый PR URL печатается в stdout. Логи шагов `temp`, `git`, `codex` и `github` печатаются в stderr, чтобы stdout можно было использовать в скриптах. Модуль `codex` относится к текущей реализации agent executor.
+Ручной direct-режим удален: аргументы командной строки и непустой stdin считаются unsupported manual input и возвращают usage error.
 
 После создания pull request runner пытается опубликовать отдельный PR comment из последнего непустого сообщения agent executor. Для текущей Codex-реализации это сообщение сохраняется через `codex exec --output-last-message`. Если финальное сообщение пустое или состоит только из whitespace, дополнительный комментарий не создается.
 
@@ -35,10 +31,10 @@ printf '%s\n' "Добавить сценарий ..." | orchv3
 
 Правило формирования метаданных PR детерминированное: `displayName = "<Identifier>: <Title>"` (или `<Title>` при пустом `Identifier`), и затем PR title — `displayName` с префиксом `PROPOSAL_PR_TITLE_PREFIX`, усечённый до 72 рун. Содержимое `AgentPrompt` в title/branch/commit не попадает.
 
-В direct-режиме CLI (`orchv3 "..."`) аргументная строка трактуется одновременно как `Title` и `AgentPrompt`, `Identifier` остаётся пустым. В режиме `orchestrate-proposals` `coreorch.BuildProposalInput` заполняет все три поля из Linear-задачи.
+В orchestration runtime `coreorch.BuildProposalInput` заполняет все три поля из Linear-задачи. CLI больше не строит `ProposalInput` из args/stdin и не вызывает `proposalrunner.Run` напрямую.
 
 ## Runtime-настройки
 
-Доступные переменные перечислены в `.env.example` без значений. Для запуска proposal runner обязательно указать `PROPOSAL_REPOSITORY_URL`; остальные поля имеют безопасные значения по умолчанию в коде и могут быть переопределены через environment. `PROPOSAL_CODEX_PATH` остается путем к Codex CLI для текущей реализации agent executor.
+Доступные переменные перечислены в `.env.example` без значений. Для запуска proposal runner обязательно указать `PROPOSAL_REPOSITORY_URL`; остальные поля имеют безопасные значения по умолчанию в коде и могут быть переопределены через environment. `PROPOSAL_POLL_INTERVAL` задает паузу между проходами proposal monitor. `PROPOSAL_CODEX_PATH` остается путем к Codex CLI для текущей реализации agent executor.
 
 По умолчанию временная директория сохраняется для диагностики. Чтобы удалять ее после workflow, включите `PROPOSAL_CLEANUP_TEMP`.

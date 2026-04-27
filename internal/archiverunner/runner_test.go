@@ -12,6 +12,7 @@ import (
 
 	"orchv3/internal/commandrunner"
 	"orchv3/internal/config"
+	"orchv3/internal/gitmanager"
 )
 
 func TestRunnerHappyPathResolvesPRBranchCommitsAndPushes(t *testing.T) {
@@ -80,6 +81,38 @@ func TestRunnerHappyPathResolvesPRBranchCommitsAndPushes(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "M internal/file.go") {
 		t.Fatalf("stdout logs = %q, want git status", stdout.String())
+	}
+}
+
+func TestRunnerUsesInjectedGitManager(t *testing.T) {
+	git := &fakeGitManager{
+		workspace:      gitmanager.Workspace{TempDir: "/tmp/archive", CloneDir: "/tmp/archive/repo"},
+		resolvedBranch: "feature/task",
+		status:         " M file.go\n",
+	}
+	agent := &fakeAgentExecutor{}
+	runner := &Runner{
+		Config: validConfig(),
+		Git:    git,
+		Agent:  agent,
+		Stdout: io.Discard,
+		Stderr: io.Discard,
+	}
+
+	err := runner.Run(context.Background(), ArchiveInput{
+		Identifier:  "ENG-1",
+		Title:       "Archive feature",
+		AgentPrompt: "Task context",
+		PRURL:       "https://github.com/example/repo/pull/42",
+	})
+	if err != nil {
+		t.Fatalf("Run() returned error: %v", err)
+	}
+	if got, want := strings.Join(git.calls, ","), "clone,resolve,checkout,status,commit-push,close"; got != want {
+		t.Fatalf("git calls = %q, want %q", got, want)
+	}
+	if len(agent.inputs) != 1 || agent.inputs[0].CloneDir != "/tmp/archive/repo" {
+		t.Fatalf("agent inputs = %#v", agent.inputs)
 	}
 }
 
@@ -314,4 +347,42 @@ type fakeAgentExecutor struct {
 func (executor *fakeAgentExecutor) Run(ctx context.Context, input AgentExecutionInput) (AgentExecutionResult, error) {
 	executor.inputs = append(executor.inputs, input)
 	return AgentExecutionResult{}, executor.err
+}
+
+type fakeGitManager struct {
+	calls          []string
+	workspace      gitmanager.Workspace
+	resolvedBranch string
+	status         string
+	err            error
+}
+
+func (manager *fakeGitManager) Clone(ctx context.Context) (gitmanager.Workspace, error) {
+	manager.calls = append(manager.calls, "clone")
+	return manager.workspace, manager.err
+}
+
+func (manager *fakeGitManager) Close(workspace gitmanager.Workspace) error {
+	manager.calls = append(manager.calls, "close")
+	return nil
+}
+
+func (manager *fakeGitManager) ResolvePullRequestBranch(ctx context.Context, cloneDir string, prURL string) (string, error) {
+	manager.calls = append(manager.calls, "resolve")
+	return manager.resolvedBranch, manager.err
+}
+
+func (manager *fakeGitManager) Checkout(ctx context.Context, cloneDir string, branchName string) error {
+	manager.calls = append(manager.calls, "checkout")
+	return manager.err
+}
+
+func (manager *fakeGitManager) StatusShort(ctx context.Context, cloneDir string) (string, error) {
+	manager.calls = append(manager.calls, "status")
+	return manager.status, manager.err
+}
+
+func (manager *fakeGitManager) CommitAllAndPush(ctx context.Context, cloneDir string, branchName string, message string, setUpstream bool) error {
+	manager.calls = append(manager.calls, "commit-push")
+	return manager.err
 }

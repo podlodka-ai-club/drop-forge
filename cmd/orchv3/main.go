@@ -42,7 +42,7 @@ type appDeps struct {
 	newProposalRunner       func(cfg config.ProposalRunnerConfig, service string, logOut io.Writer) singleProposalRunner
 	newApplyRunner          func(cfg config.ProposalRunnerConfig, service string, logOut io.Writer) singleApplyRunner
 	newArchiveRunner        func(cfg config.ProposalRunnerConfig, service string, logOut io.Writer) singleArchiveRunner
-	newEventPublisher       func(cfg config.TelegramConfig, logOut io.Writer) (events.Publisher, error)
+	newEventPublisher       func(telegramCfg config.TelegramConfig, taskManagerCfg config.LinearTaskManagerConfig, logOut io.Writer) (events.Publisher, error)
 	newTaskManager          func(cfg config.LinearTaskManagerConfig, logOut io.Writer, publisher events.Publisher) coreorch.TaskManager
 	newProposalOrchestrator func(cfg config.Config, tasks coreorch.TaskManager, proposalRunner coreorch.ProposalRunner, applyRunner coreorch.ApplyRunner, archiveRunner coreorch.ArchiveRunner, logOut io.Writer) proposalMonitor
 }
@@ -78,7 +78,7 @@ func runWithDeps(args []string, stdin *os.File, stdout io.Writer, stderr io.Writ
 		defer func() { _ = closer.Close() }()
 	}
 
-	publisher, err := deps.newEventPublisher(cfg.Telegram, logOut)
+	publisher, err := deps.newEventPublisher(cfg.Telegram, cfg.TaskManager, logOut)
 	if err != nil {
 		logger.Errorf("cli", "build event publisher: %v", err)
 		return 1
@@ -189,7 +189,7 @@ func defaultDeps() appDeps {
 	}
 }
 
-func buildEventPublisher(cfg config.TelegramConfig, logOut io.Writer) (events.Publisher, error) {
+func buildEventPublisher(cfg config.TelegramConfig, taskManagerCfg config.LinearTaskManagerConfig, logOut io.Writer) (events.Publisher, error) {
 	dispatcher := events.NewDispatcher()
 	if !cfg.Enabled {
 		return dispatcher, nil
@@ -198,7 +198,12 @@ func buildEventPublisher(cfg config.TelegramConfig, logOut io.Writer) (events.Pu
 		return nil, err
 	}
 
-	dispatcher.Subscribe(events.TaskStatusChangedType, telegramnotifications.NewNotifier(cfg))
+	dispatcher.Subscribe(events.TaskStatusChangedType, telegramnotifications.NewNotifier(
+		cfg,
+		taskManagerCfg.NeedProposalReviewStateID,
+		taskManagerCfg.NeedCodeReviewStateID,
+		taskManagerCfg.NeedArchiveReviewStateID,
+	))
 	steplog.New(writerOrDiscard(logOut)).Infof("cli", "telegram notifications enabled")
 	return dispatcher, nil
 }

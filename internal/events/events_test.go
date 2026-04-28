@@ -37,6 +37,36 @@ func TestDispatcherPublishesMatchingEvent(t *testing.T) {
 	}
 }
 
+func TestTaskStatusChangedSupportsOptionalPRContext(t *testing.T) {
+	payload := TaskStatusChanged{
+		TaskID:            "task-1",
+		TargetStateID:     "state-review",
+		TaskIdentifier:    "DRO-50",
+		TaskTitle:         "Доработать формат сообщения в TG",
+		TargetStateName:   "Need Code Review",
+		PullRequestURL:    "https://github.com/example/repo/pull/50",
+		PullRequestBranch: "codex/proposal/dro-50",
+	}
+
+	event := Event{
+		Type:    TaskStatusChangedType,
+		Payload: payload,
+	}
+	if event.Type != TaskStatusChangedType {
+		t.Fatalf("event type = %q, want %q", event.Type, TaskStatusChangedType)
+	}
+	got, ok := event.Payload.(TaskStatusChanged)
+	if !ok {
+		t.Fatalf("payload type = %T, want TaskStatusChanged", event.Payload)
+	}
+	if got.PullRequestURL != "https://github.com/example/repo/pull/50" || got.PullRequestBranch != "codex/proposal/dro-50" {
+		t.Fatalf("pr context = url %q branch %q", got.PullRequestURL, got.PullRequestBranch)
+	}
+	if got.TaskID != "task-1" || got.TargetStateID != "state-review" {
+		t.Fatalf("required fields changed: %#v", got)
+	}
+}
+
 func TestDispatcherSkipsUnrelatedEvent(t *testing.T) {
 	dispatcher := NewDispatcher()
 	called := false

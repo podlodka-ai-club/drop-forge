@@ -22,6 +22,7 @@ type TaskManager interface {
 	GetTasks(ctx context.Context) ([]taskmanager.Task, error)
 	AddPR(ctx context.Context, taskID string, prURL string) error
 	MoveTask(ctx context.Context, taskID string, stateID string) error
+	MoveTaskWithContext(ctx context.Context, taskID string, stateID string, statusContext taskmanager.StatusChangeContext) error
 }
 
 type ProposalRunner interface {
@@ -194,7 +195,8 @@ func (orch *Orchestrator) processProposalTask(ctx context.Context, logger steplo
 		return fmt.Errorf("process proposal %s: attach proposal pr %s: %w", taskRef, prURL, err)
 	}
 
-	if err := orch.TaskManager.MoveTask(ctx, task.ID, orch.Config.NeedProposalReviewStateID); err != nil {
+	statusContext := reviewStatusContext(task, "Need Proposal Review", prURL, "")
+	if err := orch.TaskManager.MoveTaskWithContext(ctx, task.ID, orch.Config.NeedProposalReviewStateID, statusContext); err != nil {
 		logger.Errorf(module, "move proposal task %s pr=%s state=%s: %v", taskRef, prURL, orch.Config.NeedProposalReviewStateID, err)
 		return fmt.Errorf("process proposal %s: move to proposal review state %s after attaching pr %s: %w", taskRef, orch.Config.NeedProposalReviewStateID, prURL, err)
 	}
@@ -223,7 +225,8 @@ func (orch *Orchestrator) processApplyTask(ctx context.Context, logger steplog.L
 		return fmt.Errorf("process apply %s: run apply: %w", taskRef, err)
 	}
 
-	if err := orch.TaskManager.MoveTask(ctx, task.ID, orch.Config.NeedCodeReviewStateID); err != nil {
+	statusContext := reviewStatusContext(task, "Need Code Review", applyInput.PRURL, applyInput.BranchName)
+	if err := orch.TaskManager.MoveTaskWithContext(ctx, task.ID, orch.Config.NeedCodeReviewStateID, statusContext); err != nil {
 		logger.Errorf(module, "move apply task %s state=%s: %v", taskRef, orch.Config.NeedCodeReviewStateID, err)
 		return fmt.Errorf("process apply %s: move to code review state %s: %w", taskRef, orch.Config.NeedCodeReviewStateID, err)
 	}
@@ -252,7 +255,8 @@ func (orch *Orchestrator) processArchiveTask(ctx context.Context, logger steplog
 		return fmt.Errorf("process archive %s: run archive: %w", taskRef, err)
 	}
 
-	if err := orch.TaskManager.MoveTask(ctx, task.ID, orch.Config.NeedArchiveReviewStateID); err != nil {
+	statusContext := reviewStatusContext(task, "Need Archive Review", archiveInput.PRURL, archiveInput.BranchName)
+	if err := orch.TaskManager.MoveTaskWithContext(ctx, task.ID, orch.Config.NeedArchiveReviewStateID, statusContext); err != nil {
 		logger.Errorf(module, "move archive task %s state=%s: %v", taskRef, orch.Config.NeedArchiveReviewStateID, err)
 		return fmt.Errorf("process archive %s: move to archive review state %s: %w", taskRef, orch.Config.NeedArchiveReviewStateID, err)
 	}
@@ -326,12 +330,24 @@ func branchSource(pullRequests []taskmanager.PullRequest) (string, string) {
 		if prURL == "" {
 			prURL = strings.TrimSpace(pullRequest.URL)
 		}
-		if branchName != "" || prURL != "" {
+		if branchName != "" && prURL != "" {
 			break
 		}
 	}
 
 	return prURL, branchName
+}
+
+func reviewStatusContext(task taskmanager.Task, targetStateName string, prURL string, branchName string) taskmanager.StatusChangeContext {
+	return taskmanager.StatusChangeContext{
+		TaskIdentifier:    task.Identifier,
+		TaskTitle:         task.Title,
+		SourceStateID:     task.State.ID,
+		SourceStateName:   task.State.Name,
+		TargetStateName:   targetStateName,
+		PullRequestURL:    prURL,
+		PullRequestBranch: branchName,
+	}
 }
 
 func buildAgentPrompt(task taskmanager.Task) string {

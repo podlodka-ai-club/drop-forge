@@ -96,6 +96,48 @@ func TestManagerMoveTaskPublishesStatusChangedEvent(t *testing.T) {
 	}
 }
 
+func TestManagerMoveTaskWithContextPublishesExpandedStatusChangedEvent(t *testing.T) {
+	publisher := &recordingPublisher{}
+	manager := &Manager{
+		Config:    validConfig(),
+		Client:    fakeClient{},
+		Publisher: publisher,
+	}
+
+	err := manager.MoveTaskWithContext(context.Background(), "issue-1", "state-review", StatusChangeContext{
+		TaskIdentifier:    "DRO-50",
+		TaskTitle:         "Доработать формат сообщения в TG",
+		SourceStateID:     "state-progress",
+		SourceStateName:   "Code in Progress",
+		TargetStateName:   "Need Code Review",
+		PullRequestURL:    "https://github.com/example/repo/pull/50",
+		PullRequestBranch: "codex/proposal/dro-50",
+	})
+	if err != nil {
+		t.Fatalf("MoveTaskWithContext() returned error: %v", err)
+	}
+
+	if len(publisher.events) != 1 {
+		t.Fatalf("published events len = %d, want 1", len(publisher.events))
+	}
+	payload, ok := publisher.events[0].Payload.(events.TaskStatusChanged)
+	if !ok {
+		t.Fatalf("payload type = %T, want TaskStatusChanged", publisher.events[0].Payload)
+	}
+	if payload.TaskID != "issue-1" || payload.TargetStateID != "state-review" {
+		t.Fatalf("payload required fields = %#v", payload)
+	}
+	if payload.TaskIdentifier != "DRO-50" || payload.TaskTitle != "Доработать формат сообщения в TG" {
+		t.Fatalf("task context = %#v", payload)
+	}
+	if payload.SourceStateID != "state-progress" || payload.SourceStateName != "Code in Progress" || payload.TargetStateName != "Need Code Review" {
+		t.Fatalf("state context = %#v", payload)
+	}
+	if payload.PullRequestURL != "https://github.com/example/repo/pull/50" || payload.PullRequestBranch != "codex/proposal/dro-50" {
+		t.Fatalf("pr context = %#v", payload)
+	}
+}
+
 func TestManagerMoveTaskDoesNotPublishWhenLinearMoveFails(t *testing.T) {
 	publisher := &recordingPublisher{}
 	manager := &Manager{

@@ -31,16 +31,17 @@ func TestNotifierSendsStatusChangedMessage(t *testing.T) {
 		ChatID:   "chat-456",
 		APIURL:   server.URL,
 		Timeout:  time.Second,
-	})
+	}, "state-code-review")
 
 	err := notifier.HandleEvent(context.Background(), events.Event{
 		Type: events.TaskStatusChangedType,
 		Payload: events.TaskStatusChanged{
 			TaskID:          "task-1",
-			TargetStateID:   "state-1",
+			TargetStateID:   "state-code-review",
 			TaskIdentifier:  "DRO-45",
 			TaskTitle:       "Добавить Telegram уведомление",
 			TargetStateName: "Need Code Review",
+			PullRequestURL:  "https://github.com/example/repo/pull/45",
 		},
 	})
 	if err != nil {
@@ -53,9 +54,56 @@ func TestNotifierSendsStatusChangedMessage(t *testing.T) {
 	if gotRequest.ChatID != "chat-456" {
 		t.Fatalf("chat_id = %q, want chat-456", gotRequest.ChatID)
 	}
-	for _, want := range []string{"DRO-45", "Добавить Telegram уведомление", "Need Code Review"} {
+	for _, want := range []string{"DRO-45", "Добавить Telegram уведомление", "Need Code Review", "https://github.com/example/repo/pull/45"} {
 		if !strings.Contains(gotRequest.Text, want) {
 			t.Fatalf("text = %q, want substring %q", gotRequest.Text, want)
+		}
+	}
+}
+
+func TestNotifierSkipsNonReviewStatusChangedMessage(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		calls++
+		t.Fatal("telegram API must not be called for non-review state")
+	}))
+	defer server.Close()
+
+	notifier := NewNotifier(config.TelegramConfig{
+		BotToken: "token-123",
+		ChatID:   "chat-456",
+		APIURL:   server.URL,
+		Timeout:  time.Second,
+	}, "state-code-review")
+
+	err := notifier.HandleEvent(context.Background(), events.Event{
+		Type: events.TaskStatusChangedType,
+		Payload: events.TaskStatusChanged{
+			TaskID:        "task-1",
+			TargetStateID: "state-code-progress",
+		},
+	})
+	if err != nil {
+		t.Fatalf("HandleEvent() returned error: %v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("telegram calls = %d, want 0", calls)
+	}
+}
+
+func TestNotifierFormatsBranchFallbackWhenPRURLMissing(t *testing.T) {
+	gotText := formatStatusChangedMessage(events.TaskStatusChanged{
+		TaskID:            "task-1",
+		TargetStateID:     "state-code-review",
+		TaskIdentifier:    "DRO-50",
+		TaskTitle:         "Доработать формат сообщения в TG",
+		TargetStateName:   "Need Code Review",
+		PullRequestBranch: "codex/proposal/dro-50",
+	})
+
+	for _, want := range []string{"DRO-50", "Доработать формат сообщения в TG", "Need Code Review", "codex/proposal/dro-50"} {
+		if !strings.Contains(gotText, want) {
+			t.Fatalf("text = %q, want substring %q", gotText, want)
 		}
 	}
 }
@@ -86,7 +134,7 @@ func TestNotifierReturnsErrorForTelegramFailure(t *testing.T) {
 		ChatID:   "chat-456",
 		APIURL:   server.URL,
 		Timeout:  time.Second,
-	})
+	}, "state-1")
 
 	err := notifier.HandleEvent(context.Background(), events.Event{
 		Type: events.TaskStatusChangedType,
@@ -115,7 +163,7 @@ func TestNotifierReturnsErrorForTelegramOKFalse(t *testing.T) {
 		ChatID:   "chat-456",
 		APIURL:   server.URL,
 		Timeout:  time.Second,
-	})
+	}, "state-1")
 
 	err := notifier.HandleEvent(context.Background(), events.Event{
 		Type: events.TaskStatusChangedType,
@@ -143,7 +191,7 @@ func TestNotifierReturnsErrorForTimeout(t *testing.T) {
 		ChatID:   "chat-456",
 		APIURL:   server.URL,
 		Timeout:  1 * time.Millisecond,
-	})
+	}, "state-1")
 
 	err := notifier.HandleEvent(context.Background(), events.Event{
 		Type: events.TaskStatusChangedType,

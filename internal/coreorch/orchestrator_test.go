@@ -180,6 +180,67 @@ func TestRunProposalsOnceRoutesProposalApplyAndArchiveTasks(t *testing.T) {
 	})
 }
 
+func TestRunProposalsOnceReviewTransitionsIncludeTelegramContext(t *testing.T) {
+	taskManager := &recordingTaskManager{
+		tasks: []taskmanager.Task{
+			readyTask("issue-1", "ENG-1", "Proposal"),
+			readyCodeTask("issue-2", "ENG-2", "Apply", taskmanager.PullRequest{URL: "https://github.com/example/repo/pull/2", Branch: "feature/apply"}),
+			readyArchiveTask("issue-3", "ENG-3", "Archive", taskmanager.PullRequest{Branch: "feature/archive"}),
+		},
+	}
+	orch := testOrchestratorWithArchive(
+		taskManager,
+		&recordingProposalRunner{urls: []string{"https://github.com/example/repo/pull/1"}},
+		&recordingApplyRunner{},
+		&recordingArchiveRunner{},
+		nil,
+	)
+
+	if err := orch.RunProposalsOnce(context.Background()); err != nil {
+		t.Fatalf("RunProposalsOnce() returned error: %v", err)
+	}
+
+	proposalContext := statusContextForState(t, taskManager, "state-proposal-review")
+	if proposalContext.TaskIdentifier != "ENG-1" || proposalContext.TaskTitle != "Proposal" || proposalContext.TargetStateName != "Need Proposal Review" {
+		t.Fatalf("proposal context = %#v", proposalContext)
+	}
+	if proposalContext.PullRequestURL != "https://github.com/example/repo/pull/1" || proposalContext.PullRequestBranch != "" {
+		t.Fatalf("proposal pr context = %#v", proposalContext)
+	}
+
+	codeContext := statusContextForState(t, taskManager, "state-code-review")
+	if codeContext.TaskIdentifier != "ENG-2" || codeContext.TaskTitle != "Apply" || codeContext.TargetStateName != "Need Code Review" {
+		t.Fatalf("code context = %#v", codeContext)
+	}
+	if codeContext.PullRequestURL != "https://github.com/example/repo/pull/2" || codeContext.PullRequestBranch != "feature/apply" {
+		t.Fatalf("code pr context = %#v", codeContext)
+	}
+
+	archiveContext := statusContextForState(t, taskManager, "state-archive-review")
+	if archiveContext.TaskIdentifier != "ENG-3" || archiveContext.TaskTitle != "Archive" || archiveContext.TargetStateName != "Need Archive Review" {
+		t.Fatalf("archive context = %#v", archiveContext)
+	}
+	if archiveContext.PullRequestURL != "" || archiveContext.PullRequestBranch != "feature/archive" {
+		t.Fatalf("archive pr context = %#v", archiveContext)
+	}
+}
+
+func TestRunProposalsOnceInProgressTransitionsDoNotRequirePRContext(t *testing.T) {
+	taskManager := &recordingTaskManager{
+		tasks: []taskmanager.Task{readyTask("issue-1", "ENG-1", "Proposal")},
+	}
+	orch := testOrchestrator(taskManager, &recordingProposalRunner{urls: []string{"https://github.com/example/repo/pull/1"}}, nil)
+
+	if err := orch.RunProposalsOnce(context.Background()); err != nil {
+		t.Fatalf("RunProposalsOnce() returned error: %v", err)
+	}
+
+	inProgressContext := statusContextForState(t, taskManager, "state-proposing-progress")
+	if inProgressContext != (taskmanager.StatusChangeContext{}) {
+		t.Fatalf("in-progress context = %#v, want empty", inProgressContext)
+	}
+}
+
 func TestRunProposalsOnceStartsDifferentRoutesConcurrently(t *testing.T) {
 	taskManager := &recordingTaskManager{
 		tasks: []taskmanager.Task{
@@ -902,6 +963,21 @@ func assertTaskCalls(t *testing.T, calls []string, taskID string, want []string)
 	}
 }
 
+func statusContextForState(t *testing.T, manager *recordingTaskManager, stateID string) taskmanager.StatusChangeContext {
+	t.Helper()
+
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	for index, movedStateID := range manager.moveStateIDs {
+		if movedStateID == stateID {
+			return manager.moveContexts[index]
+		}
+	}
+
+	t.Fatalf("missing move to state %s in %#v", stateID, manager.moveStateIDs)
+	return taskmanager.StatusChangeContext{}
+}
+
 type concurrentStartTracker struct {
 	mu         sync.Mutex
 	want       int
@@ -1036,6 +1112,7 @@ type recordingTaskManager struct {
 	addPRURLs        []string
 	moveTaskIDs      []string
 	moveStateIDs     []string
+	moveContexts     []taskmanager.StatusChangeContext
 	calls            []string
 }
 
@@ -1056,10 +1133,19 @@ func (manager *recordingTaskManager) AddPR(ctx context.Context, taskID string, p
 }
 
 func (manager *recordingTaskManager) MoveTask(ctx context.Context, taskID string, stateID string) error {
+	return manager.moveTask(ctx, taskID, stateID, taskmanager.StatusChangeContext{})
+}
+
+func (manager *recordingTaskManager) MoveTaskWithContext(ctx context.Context, taskID string, stateID string, statusContext taskmanager.StatusChangeContext) error {
+	return manager.moveTask(ctx, taskID, stateID, statusContext)
+}
+
+func (manager *recordingTaskManager) moveTask(ctx context.Context, taskID string, stateID string, statusContext taskmanager.StatusChangeContext) error {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
 	manager.moveTaskIDs = append(manager.moveTaskIDs, taskID)
 	manager.moveStateIDs = append(manager.moveStateIDs, stateID)
+	manager.moveContexts = append(manager.moveContexts, statusContext)
 	manager.calls = append(manager.calls, "move:"+taskID+":"+stateID)
 	if manager.moveErrByStateID != nil {
 		if err := manager.moveErrByStateID[stateID]; err != nil {

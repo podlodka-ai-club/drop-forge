@@ -23,8 +23,8 @@
 6. После изменений `GitManager` оформляет branch, commit, push и PR.
 7. `AgentExecutor` возвращает `CoreOrch` результат выполнения, включая `PR URL`.
 8. `CoreOrch` просит `TaskManager` обновить статус задачи и прикрепить ссылку на PR.
-9. После успешного обновления статуса `TaskManager` публикует событие `task.status_changed` в локальный `EventDispatcher`.
-10. Если включены Telegram-уведомления, Telegram subscriber получает событие и отправляет best-effort сообщение в чат; ошибка уведомления логируется, но не отменяет смену статуса.
+9. После успешного обновления статуса `TaskManager` публикует событие `task.status_changed` в локальный `EventDispatcher`; для review-переходов `CoreOrch` передает в `TaskManager` snapshot задачи и PR-контекст для downstream уведомлений.
+10. Если включены Telegram-уведомления, Telegram subscriber получает событие и отправляет best-effort сообщение в чат только для configured review state IDs; ошибка уведомления логируется, но не отменяет смену статуса.
 11. Если человек отклоняет proposal, задача возвращается в `Ready to Propose` и цикл повторяется.
 12. Если человек принимает proposal, задача переводится в `Ready to Code`.
 
@@ -36,7 +36,7 @@
 4. `CoreOrch` переводит задачу в `Code in Progress` до запуска executor-а.
 5. `ApplyRunner` через `GitManager` клонирует репозиторий во временную директорию, определяет ветку из branch name или PR URL, переключается на нее и запускает Codex с OpenSpec Apply-инструкцией.
 6. Если агент создал изменения, `GitManager` выполняет `git add`, `commit` и `push` в ту же ветку без создания нового PR.
-7. После успешного push `CoreOrch` переводит задачу в `Need Code Review`.
+7. После успешного push `CoreOrch` переводит задачу в `Need Code Review`, передавая task identifier/title и PR URL или branch в контекст события.
 8. Успешные переходы статусов публикуют `task.status_changed`; подключенные подписчики обрабатывают событие синхронно и best-effort.
 
 ## Целевой Поток Archive-Stage
@@ -47,7 +47,7 @@
 4. `CoreOrch` переводит задачу в `Archiving in Progress` до запуска executor-а.
 5. `ArchiveRunner` через `GitManager` клонирует репозиторий во временную директорию, определяет ветку из branch name или PR URL, переключается на нее и запускает Codex с OpenSpec Archive-инструкцией.
 6. Если агент создал archive-изменения, `GitManager` выполняет `git add`, `commit` и `push` в ту же ветку без создания нового PR.
-7. После успешного push `CoreOrch` переводит задачу в `Need Archive Review`.
+7. После успешного push `CoreOrch` переводит задачу в `Need Archive Review`, передавая task identifier/title и PR URL или branch в контекст события.
 8. Успешные переходы статусов публикуют `task.status_changed`; подключенные подписчики обрабатывают событие синхронно и best-effort.
 
 ## Границы Ответственности
@@ -65,12 +65,12 @@
 - При создании, выделении или существенном изменении сервисов агент обязан обновлять эту секцию, чтобы статус реализации и маппинг на код оставались актуальными.
 - `Logger` уже реализован в `internal/steplog`. Это текущий готовый сервис с явным контрактом JSON Lines.
 - `EventDispatcher` реализован в `internal/events`: пакет определяет `Event`, `Publisher`, `Handler`, payload `TaskStatusChanged` и локальный синхронный dispatcher.
-- `NotificationSubscriber` для Telegram реализован в `internal/notifications/telegram`: подписчик обрабатывает `task.status_changed` и отправляет `sendMessage` через стандартный `net/http`.
+- `NotificationSubscriber` для Telegram реализован в `internal/notifications/telegram`: подписчик обрабатывает `task.status_changed`, фильтрует события по review state IDs из существующей Linear-конфигурации и отправляет `sendMessage` через стандартный `net/http`.
 - `AgentExecutor` реализован как явный контракт внутри `internal/proposalrunner`, `internal/applyrunner` и `internal/archiverunner`. Текущие реализации `CodexCLIExecutor` изолируют протокол `codex exec` и stage-specific prompt.
 - `GitManager` реализован в `internal/gitmanager`: он управляет isolated clone workspace, cleanup, `git status/checkout/add/commit/push` и GitHub CLI операциями `gh pr view/create/comment`. `internal/proposalrunner`, `internal/applyrunner` и `internal/archiverunner` используют его через узкие интерфейсы, сохраняя stage-specific построение prompt, branch name, commit message и PR metadata внутри runner-пакетов.
-- `CoreOrch` реализован в `internal/coreorch`: он получает managed tasks через контракт `TaskManager`, последовательно маршрутизирует `ReadyToProposeStateID` в `ProposalRunner`, `ReadyToCodeStateID` в `ApplyRunner`, а `ReadyToArchiveStateID` в `ArchiveRunner`. Proposal-route прикрепляет PR URL и переводит задачу в `NeedProposalReviewStateID`; Apply-route переводит задачу через `CodeInProgressStateID` в `NeedCodeReviewStateID`; Archive-route переводит задачу через `ArchivingInProgressStateID` в `NeedArchiveReviewStateID`.
+- `CoreOrch` реализован в `internal/coreorch`: он получает managed tasks через контракт `TaskManager`, последовательно маршрутизирует `ReadyToProposeStateID` в `ProposalRunner`, `ReadyToCodeStateID` в `ApplyRunner`, а `ReadyToArchiveStateID` в `ArchiveRunner`. Proposal-route прикрепляет PR URL и переводит задачу в `NeedProposalReviewStateID`; Apply-route переводит задачу через `CodeInProgressStateID` в `NeedCodeReviewStateID`; Archive-route переводит задачу через `ArchivingInProgressStateID` в `NeedArchiveReviewStateID`. Review-переходы используют расширенный move с task identifier/title, target state name и PR URL/branch.
 - `cmd/orchv3/main.go` запускает orchestration monitor как default runtime без аргументов CLI. При старте он создает локальный dispatcher, регистрирует Telegram subscriber только при `TELEGRAM_NOTIFICATIONS_ENABLED=true` и передает publisher в `TaskManager`. Прямой single-run запуск `proposalrunner.Run` по task description из args/stdin удален; непустые args/stdin считаются unsupported manual input.
-- `TaskManager` реализован в `internal/taskmanager`: сервис читает managed Linear tasks, возвращает внутреннюю модель задачи с идентификаторами, описанием, состоянием, комментариями и PR attachment URL, а также выполняет `AddPR` и `MoveTask`. После успешного `MoveTask` он публикует `task.status_changed`; ошибка публикации логируется и не меняет результат уже выполненного перехода в Linear.
+- `TaskManager` реализован в `internal/taskmanager`: сервис читает managed Linear tasks, возвращает внутреннюю модель задачи с идентификаторами, описанием, состоянием, комментариями и PR attachment URL/branch, а также выполняет `AddPR`, `MoveTask` и расширенный move с context snapshot. После успешного move он публикует `task.status_changed`; ошибка публикации логируется и не меняет результат уже выполненного перехода в Linear.
 - `internal/commandrunner` — это не отдельный доменный актор, а технический адаптер для запуска внешних команд, который переиспользуется `AgentExecutor` и `GitManager`.
 
 ## Текущее Архитектурное Чтение Репозитория

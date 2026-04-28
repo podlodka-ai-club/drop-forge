@@ -14,6 +14,7 @@ import (
 	"orchv3/internal/archiverunner"
 	"orchv3/internal/config"
 	"orchv3/internal/coreorch"
+	"orchv3/internal/events"
 	"orchv3/internal/proposalrunner"
 	"orchv3/internal/steplog"
 	"orchv3/internal/taskmanager"
@@ -121,9 +122,10 @@ func TestRunDefaultWiresDependenciesAndKeepsStdoutEmpty(t *testing.T) {
 	var stderr bytes.Buffer
 	deps := testDeps()
 	state := &cliTestState{}
-	deps.newTaskManager = func(cfg config.LinearTaskManagerConfig, logOut io.Writer) coreorch.TaskManager {
+	deps.newTaskManager = func(cfg config.LinearTaskManagerConfig, logOut io.Writer, publisher events.Publisher) coreorch.TaskManager {
 		state.taskManagerConfig = cfg
 		state.taskManagerLogOut = logOut
+		state.taskManagerPublisher = publisher
 		return &fakeTaskManager{}
 	}
 	deps.newProposalRunner = func(cfg config.ProposalRunnerConfig, service string, logOut io.Writer) singleProposalRunner {
@@ -203,8 +205,45 @@ func TestRunDefaultWiresDependenciesAndKeepsStdoutEmpty(t *testing.T) {
 	if state.taskManagerLogOut == nil || state.runnerLogOut == nil || state.applyRunnerLogOut == nil || state.archiveRunnerLogOut == nil || state.orchestratorLogOut == nil {
 		t.Fatal("log outputs should be wired")
 	}
+	if state.taskManagerPublisher == nil {
+		t.Fatal("task manager publisher should be wired")
+	}
 	if state.orchestratorTaskManager == nil || state.orchestratorRunner == nil || state.orchestratorApplyRunner == nil || state.orchestratorArchiveRunner == nil {
 		t.Fatal("orchestrator dependencies should be wired")
+	}
+}
+
+func TestBuildEventPublisherRegistersTelegramOnlyWhenEnabled(t *testing.T) {
+	disabledPublisher, err := buildEventPublisher(config.TelegramConfig{}, io.Discard)
+	if err != nil {
+		t.Fatalf("buildEventPublisher(disabled) returned error: %v", err)
+	}
+	if err := disabledPublisher.Publish(context.Background(), events.Event{
+		Type:    events.TaskStatusChangedType,
+		Payload: events.TaskStatusChanged{TaskID: "task-1", TargetStateID: "state-1"},
+	}); err != nil {
+		t.Fatalf("disabled publisher Publish() returned error: %v", err)
+	}
+
+	enabledPublisher, err := buildEventPublisher(config.TelegramConfig{
+		Enabled:  true,
+		BotToken: "token-123",
+		ChatID:   "chat-456",
+		APIURL:   "http://127.0.0.1:1",
+		Timeout:  time.Millisecond,
+	}, io.Discard)
+	if err != nil {
+		t.Fatalf("buildEventPublisher(enabled) returned error: %v", err)
+	}
+	err = enabledPublisher.Publish(context.Background(), events.Event{
+		Type:    events.TaskStatusChangedType,
+		Payload: events.TaskStatusChanged{TaskID: "task-1", TargetStateID: "state-1"},
+	})
+	if err == nil {
+		t.Fatal("enabled publisher Publish() error = nil, want telegram subscriber delivery error")
+	}
+	if !strings.Contains(err.Error(), "send telegram message") {
+		t.Fatalf("Publish() error = %q, want telegram delivery context", err.Error())
 	}
 }
 
@@ -364,6 +403,7 @@ func emptyTempFile(t *testing.T) *os.File {
 type cliTestState struct {
 	taskManagerConfig         config.LinearTaskManagerConfig
 	taskManagerLogOut         io.Writer
+	taskManagerPublisher      events.Publisher
 	runnerConfig              config.ProposalRunnerConfig
 	runnerService             string
 	runnerLogOut              io.Writer
@@ -473,7 +513,8 @@ func testDeps() appDeps {
 		newArchiveRunner: func(cfg config.ProposalRunnerConfig, service string, logOut io.Writer) singleArchiveRunner {
 			return &fakeSingleArchiveRunner{}
 		},
-		newTaskManager: func(cfg config.LinearTaskManagerConfig, logOut io.Writer) coreorch.TaskManager {
+		newEventPublisher: buildEventPublisher,
+		newTaskManager: func(cfg config.LinearTaskManagerConfig, logOut io.Writer, publisher events.Publisher) coreorch.TaskManager {
 			return &fakeTaskManager{}
 		},
 		newProposalOrchestrator: func(cfg config.Config, tasks coreorch.TaskManager, proposalRunner coreorch.ProposalRunner, applyRunner coreorch.ApplyRunner, archiveRunner coreorch.ArchiveRunner, logOut io.Writer) proposalMonitor {

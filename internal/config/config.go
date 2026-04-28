@@ -41,6 +41,7 @@ type Config struct {
 	ProposalPollInterval time.Duration
 	ProposalRunner       ProposalRunnerConfig
 	TaskManager          LinearTaskManagerConfig
+	Telegram             TelegramConfig
 	Logstash             LogstashConfig
 }
 
@@ -77,6 +78,14 @@ type LinearTaskManagerConfig struct {
 	NeedArchiveReviewStateID   string
 }
 
+type TelegramConfig struct {
+	Enabled  bool
+	BotToken string
+	ChatID   string
+	APIURL   string
+	Timeout  time.Duration
+}
+
 func Load() (Config, error) {
 	if err := loadDotEnv(); err != nil {
 		return Config{}, err
@@ -98,6 +107,11 @@ func Load() (Config, error) {
 	}
 
 	proposalPollInterval, err := positiveDurationFromEnv("PROPOSAL_POLL_INTERVAL", defaultProposalPollInterval)
+	if err != nil {
+		return Config{}, err
+	}
+
+	telegramCfg, err := loadTelegramConfig()
 	if err != nil {
 		return Config{}, err
 	}
@@ -134,8 +148,34 @@ func Load() (Config, error) {
 			NeedCodeReviewStateID:      trimmedStringFromEnv("LINEAR_STATE_NEED_CODE_REVIEW_ID", ""),
 			NeedArchiveReviewStateID:   trimmedStringFromEnv("LINEAR_STATE_NEED_ARCHIVE_REVIEW_ID", ""),
 		},
+		Telegram: telegramCfg,
 		Logstash: logstashCfg,
 	}, nil
+}
+
+func loadTelegramConfig() (TelegramConfig, error) {
+	enabled, err := boolFromEnv("TELEGRAM_NOTIFICATIONS_ENABLED", false)
+	if err != nil {
+		return TelegramConfig{}, err
+	}
+
+	timeout, err := durationFromEnv("TELEGRAM_TIMEOUT", 0)
+	if err != nil {
+		return TelegramConfig{}, err
+	}
+
+	cfg := TelegramConfig{
+		Enabled:  enabled,
+		BotToken: trimmedStringFromEnv("TELEGRAM_BOT_TOKEN", ""),
+		ChatID:   trimmedStringFromEnv("TELEGRAM_CHAT_ID", ""),
+		APIURL:   strings.TrimRight(trimmedStringFromEnv("TELEGRAM_API_URL", ""), "/"),
+		Timeout:  timeout,
+	}
+	if err := cfg.Validate(); err != nil {
+		return TelegramConfig{}, err
+	}
+
+	return cfg, nil
 }
 
 func loadLogstashConfig() (LogstashConfig, error) {
@@ -229,6 +269,29 @@ func (cfg LinearTaskManagerConfig) Validate() error {
 		if strings.TrimSpace(value) == "" {
 			return fmt.Errorf("%s must not be empty", key)
 		}
+	}
+
+	return nil
+}
+
+func (cfg TelegramConfig) Validate() error {
+	if !cfg.Enabled {
+		return nil
+	}
+
+	requiredValues := map[string]string{
+		"TELEGRAM_BOT_TOKEN": cfg.BotToken,
+		"TELEGRAM_CHAT_ID":   cfg.ChatID,
+		"TELEGRAM_API_URL":   cfg.APIURL,
+	}
+
+	for key, value := range requiredValues {
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("%s must not be empty when TELEGRAM_NOTIFICATIONS_ENABLED=true", key)
+		}
+	}
+	if cfg.Timeout <= 0 {
+		return fmt.Errorf("TELEGRAM_TIMEOUT must be a positive duration when TELEGRAM_NOTIFICATIONS_ENABLED=true, got %s", cfg.Timeout)
 	}
 
 	return nil

@@ -16,14 +16,16 @@ type Event struct {
 }
 
 type TaskStatusChanged struct {
-	TaskID          string
-	TargetStateID   string
-	OccurredAt      time.Time
-	TaskIdentifier  string
-	TaskTitle       string
-	SourceStateID   string
-	SourceStateName string
-	TargetStateName string
+	TaskID            string
+	TargetStateID     string
+	OccurredAt        time.Time
+	TaskIdentifier    string
+	TaskTitle         string
+	SourceStateID     string
+	SourceStateName   string
+	TargetStateName   string
+	PullRequestURL    string
+	PullRequestBranch string
 }
 
 type Publisher interface {

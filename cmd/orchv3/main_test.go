@@ -214,7 +214,12 @@ func TestRunDefaultWiresDependenciesAndKeepsStdoutEmpty(t *testing.T) {
 }
 
 func TestBuildEventPublisherRegistersTelegramOnlyWhenEnabled(t *testing.T) {
-	disabledPublisher, err := buildEventPublisher(config.TelegramConfig{}, io.Discard)
+	taskManagerCfg := config.LinearTaskManagerConfig{
+		NeedProposalReviewStateID: "state-proposal-review",
+		NeedCodeReviewStateID:     "state-code-review",
+		NeedArchiveReviewStateID:  "state-archive-review",
+	}
+	disabledPublisher, err := buildEventPublisher(config.TelegramConfig{}, taskManagerCfg, io.Discard)
 	if err != nil {
 		t.Fatalf("buildEventPublisher(disabled) returned error: %v", err)
 	}
@@ -231,13 +236,13 @@ func TestBuildEventPublisherRegistersTelegramOnlyWhenEnabled(t *testing.T) {
 		ChatID:   "chat-456",
 		APIURL:   "http://127.0.0.1:1",
 		Timeout:  time.Millisecond,
-	}, io.Discard)
+	}, taskManagerCfg, io.Discard)
 	if err != nil {
 		t.Fatalf("buildEventPublisher(enabled) returned error: %v", err)
 	}
 	err = enabledPublisher.Publish(context.Background(), events.Event{
 		Type:    events.TaskStatusChangedType,
-		Payload: events.TaskStatusChanged{TaskID: "task-1", TargetStateID: "state-1"},
+		Payload: events.TaskStatusChanged{TaskID: "task-1", TargetStateID: "state-code-review"},
 	})
 	if err == nil {
 		t.Fatal("enabled publisher Publish() error = nil, want telegram subscriber delivery error")
@@ -463,6 +468,10 @@ func (manager *fakeTaskManager) AddPR(ctx context.Context, taskID string, prURL 
 }
 
 func (manager *fakeTaskManager) MoveTask(ctx context.Context, taskID string, stateID string) error {
+	return nil
+}
+
+func (manager *fakeTaskManager) MoveTaskWithContext(ctx context.Context, taskID string, stateID string, statusContext taskmanager.StatusChangeContext) error {
 	return nil
 }
 

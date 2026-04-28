@@ -25,9 +25,9 @@ Default runtime связывает `CoreOrch`, `TaskManager`, `proposalrunner`, 
 - `proposalrunner` создает OpenSpec proposal PR во внешнем репозитории;
 - `applyrunner` клонирует репозиторий, переключается на ветку задачи, запускает OpenSpec Apply через Codex CLI, коммитит и пушит изменения без создания нового PR;
 - `archiverunner` клонирует репозиторий, переключается на ветку задачи, запускает OpenSpec Archive через Codex CLI, коммитит и пушит изменения без создания нового PR;
-- после успеха `CoreOrch` вызывает `TaskManager.AddPR(...)`, затем `TaskManager.MoveTask(...)` в `LINEAR_STATE_NEED_PROPOSAL_REVIEW_ID`.
-- после успешного Apply `CoreOrch` переводит задачу из `LINEAR_STATE_CODE_IN_PROGRESS_ID` в `LINEAR_STATE_NEED_CODE_REVIEW_ID`.
-- после успешного Archive `CoreOrch` переводит задачу из `LINEAR_STATE_ARCHIVING_IN_PROGRESS_ID` в `LINEAR_STATE_NEED_ARCHIVE_REVIEW_ID`.
+- после успеха `CoreOrch` вызывает `TaskManager.AddPR(...)`, затем переводит задачу в `LINEAR_STATE_NEED_PROPOSAL_REVIEW_ID` с контекстом задачи и PR для уведомлений.
+- после успешного Apply `CoreOrch` переводит задачу из `LINEAR_STATE_CODE_IN_PROGRESS_ID` в `LINEAR_STATE_NEED_CODE_REVIEW_ID` с контекстом задачи и PR.
+- после успешного Archive `CoreOrch` переводит задачу из `LINEAR_STATE_ARCHIVING_IN_PROGRESS_ID` в `LINEAR_STATE_NEED_ARCHIVE_REVIEW_ID` с контекстом задачи и PR.
 - после каждого прохода monitor ждет `PROPOSAL_POLL_INTERVAL` и запускает следующий проход до остановки процесса.
 
 Если отдельный orchestration pass падает, monitor пишет structured error и продолжает следующий проход после polling interval. Если runner падает или Linear не смог прикрепить PR, задача не переводится в review state. Если PR уже прикреплен, но move task упал, ошибка логируется с контекстом задачи и PR URL.
@@ -64,7 +64,7 @@ Go-модуль и зависимости зафиксированы в [go.mod]
 - `LINEAR_API_URL`, `LINEAR_API_TOKEN`, `LINEAR_PROJECT_ID` — подключение к Linear и фильтр по проекту;
 - `LINEAR_STATE_READY_TO_PROPOSE_ID`, `LINEAR_STATE_READY_TO_CODE_ID`, `LINEAR_STATE_READY_TO_ARCHIVE_ID` — идентификаторы управляемых Linear state'ов для `TaskManager`;
 - `LINEAR_STATE_PROPOSING_IN_PROGRESS_ID`, `LINEAR_STATE_CODE_IN_PROGRESS_ID`, `LINEAR_STATE_ARCHIVING_IN_PROGRESS_ID` — target state IDs для in-progress переходов;
-- `LINEAR_STATE_NEED_PROPOSAL_REVIEW_ID`, `LINEAR_STATE_NEED_CODE_REVIEW_ID`, `LINEAR_STATE_NEED_ARCHIVE_REVIEW_ID` — target state IDs для review-этапов, которые `CoreOrch` использует при вызове `TaskManager.MoveTask(...)`;
+- `LINEAR_STATE_NEED_PROPOSAL_REVIEW_ID`, `LINEAR_STATE_NEED_CODE_REVIEW_ID`, `LINEAR_STATE_NEED_ARCHIVE_REVIEW_ID` — target state IDs для review-этапов; они же используются Telegram subscriber-ом как фильтр человеко-ориентированных уведомлений;
 - `APP_ENV`, `APP_NAME`, `LOG_LEVEL`, `HTTP_PORT`, `OPENAI_API_KEY` — общие runtime-параметры, поддерживаемые конфигом.
 
 ## Запуск

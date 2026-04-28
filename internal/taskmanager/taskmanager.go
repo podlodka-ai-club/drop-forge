@@ -30,6 +30,16 @@ type PullRequest struct {
 	Branch string
 }
 
+type StatusChangeContext struct {
+	TaskIdentifier    string
+	TaskTitle         string
+	SourceStateID     string
+	SourceStateName   string
+	TargetStateName   string
+	PullRequestURL    string
+	PullRequestBranch string
+}
+
 type WorkflowState struct {
 	ID   string
 	Name string
@@ -90,6 +100,14 @@ func (manager *Manager) GetTasks(ctx context.Context) ([]Task, error) {
 }
 
 func (manager *Manager) MoveTask(ctx context.Context, taskID string, stateID string) error {
+	return manager.moveTask(ctx, taskID, stateID, StatusChangeContext{})
+}
+
+func (manager *Manager) MoveTaskWithContext(ctx context.Context, taskID string, stateID string, statusContext StatusChangeContext) error {
+	return manager.moveTask(ctx, taskID, stateID, statusContext)
+}
+
+func (manager *Manager) moveTask(ctx context.Context, taskID string, stateID string, statusContext StatusChangeContext) error {
 	if err := manager.Config.Validate(); err != nil {
 		return fmt.Errorf("validate task manager config: %w", err)
 	}
@@ -108,7 +126,7 @@ func (manager *Manager) MoveTask(ctx context.Context, taskID string, stateID str
 	}
 
 	logger.Infof("taskmanager", "moved task=%s state=%s", taskID, stateID)
-	manager.publishTaskStatusChanged(ctx, logger, taskID, stateID)
+	manager.publishTaskStatusChanged(ctx, logger, taskID, stateID, statusContext)
 	return nil
 }
 
@@ -170,16 +188,23 @@ func (manager *Manager) client() Client {
 	return manager.Client
 }
 
-func (manager *Manager) publishTaskStatusChanged(ctx context.Context, logger steplog.Logger, taskID string, stateID string) {
+func (manager *Manager) publishTaskStatusChanged(ctx context.Context, logger steplog.Logger, taskID string, stateID string, statusContext StatusChangeContext) {
 	if manager.Publisher == nil {
 		return
 	}
 
 	occurredAt := time.Now().UTC()
 	payload := events.TaskStatusChanged{
-		TaskID:        taskID,
-		TargetStateID: stateID,
-		OccurredAt:    occurredAt,
+		TaskID:            taskID,
+		TargetStateID:     stateID,
+		OccurredAt:        occurredAt,
+		TaskIdentifier:    strings.TrimSpace(statusContext.TaskIdentifier),
+		TaskTitle:         strings.TrimSpace(statusContext.TaskTitle),
+		SourceStateID:     strings.TrimSpace(statusContext.SourceStateID),
+		SourceStateName:   strings.TrimSpace(statusContext.SourceStateName),
+		TargetStateName:   strings.TrimSpace(statusContext.TargetStateName),
+		PullRequestURL:    strings.TrimSpace(statusContext.PullRequestURL),
+		PullRequestBranch: strings.TrimSpace(statusContext.PullRequestBranch),
 	}
 	event := events.Event{
 		Type:       events.TaskStatusChangedType,

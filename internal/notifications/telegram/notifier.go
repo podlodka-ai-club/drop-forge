@@ -14,14 +14,16 @@ import (
 )
 
 type Notifier struct {
-	Config config.TelegramConfig
-	Client *http.Client
+	Config         config.TelegramConfig
+	ReviewStateIDs map[string]struct{}
+	Client         *http.Client
 }
 
-func NewNotifier(cfg config.TelegramConfig) *Notifier {
+func NewNotifier(cfg config.TelegramConfig, reviewStateIDs ...string) *Notifier {
 	return &Notifier{
-		Config: cfg,
-		Client: &http.Client{Timeout: cfg.Timeout},
+		Config:         cfg,
+		ReviewStateIDs: reviewStateIDSet(reviewStateIDs),
+		Client:         &http.Client{Timeout: cfg.Timeout},
 	}
 }
 
@@ -33,6 +35,9 @@ func (notifier *Notifier) HandleEvent(ctx context.Context, event events.Event) e
 	payload, ok := event.Payload.(events.TaskStatusChanged)
 	if !ok {
 		return fmt.Errorf("send telegram message: unexpected payload type %T", event.Payload)
+	}
+	if !notifier.isReviewState(payload.TargetStateID) {
+		return nil
 	}
 
 	return notifier.SendStatusChanged(ctx, payload)
@@ -100,8 +105,36 @@ func formatStatusChangedMessage(payload events.TaskStatusChanged) string {
 	}
 	builder.WriteString("\nTarget state: ")
 	builder.WriteString(target)
+	if strings.TrimSpace(payload.PullRequestURL) != "" {
+		builder.WriteString("\nPull request: ")
+		builder.WriteString(strings.TrimSpace(payload.PullRequestURL))
+	} else if strings.TrimSpace(payload.PullRequestBranch) != "" {
+		builder.WriteString("\nPull request branch: ")
+		builder.WriteString(strings.TrimSpace(payload.PullRequestBranch))
+	}
 
 	return builder.String()
+}
+
+func (notifier *Notifier) isReviewState(stateID string) bool {
+	if len(notifier.ReviewStateIDs) == 0 {
+		return false
+	}
+	_, ok := notifier.ReviewStateIDs[strings.TrimSpace(stateID)]
+	return ok
+}
+
+func reviewStateIDSet(stateIDs []string) map[string]struct{} {
+	result := make(map[string]struct{}, len(stateIDs))
+	for _, stateID := range stateIDs {
+		stateID = strings.TrimSpace(stateID)
+		if stateID == "" {
+			continue
+		}
+		result[stateID] = struct{}{}
+	}
+
+	return result
 }
 
 func payloadOrFallback(value string, fallback string) string {

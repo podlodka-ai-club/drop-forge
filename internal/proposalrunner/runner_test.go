@@ -15,6 +15,7 @@ import (
 
 	"orchv3/internal/commandrunner"
 	"orchv3/internal/config"
+	"orchv3/internal/gitmanager"
 )
 
 func TestRunnerHappyPathCreatesPRAndCommentFromLastMessage(t *testing.T) {
@@ -95,6 +96,39 @@ func TestRunnerHappyPathCreatesPRAndCommentFromLastMessage(t *testing.T) {
 	assertLogMessage(t, stdoutEvents, "github", "created PR comment from final agent response")
 	if strings.TrimSpace(stderr.String()) != "" {
 		t.Fatalf("stderr = %q, want empty for fake agent happy path", stderr.String())
+	}
+}
+
+func TestRunnerUsesInjectedGitManager(t *testing.T) {
+	git := &fakeGitManager{
+		workspace: gitmanager.Workspace{TempDir: "/tmp/proposal", CloneDir: "/tmp/proposal/repo"},
+		status:    " M openspec/file.md\n",
+		prURL:     "https://github.com/example/project/pull/42",
+	}
+	agent := &fakeAgentExecutor{
+		result: AgentExecutionResult{FinalMessage: "Final response"},
+	}
+	runner := &Runner{
+		Config: validConfig(),
+		Git:    git,
+		Agent:  agent,
+		Stdout: io.Discard,
+		Stderr: io.Discard,
+		Now:    fixedTime,
+	}
+
+	prURL, err := runner.Run(context.Background(), ProposalInput{Title: "Task", AgentPrompt: "Prompt"})
+	if err != nil {
+		t.Fatalf("Run() returned error: %v", err)
+	}
+	if prURL != git.prURL {
+		t.Fatalf("prURL = %q, want %q", prURL, git.prURL)
+	}
+	if got, want := strings.Join(git.calls, ","), "clone,status,checkout-new,commit-push,create-pr,comment-pr,close"; got != want {
+		t.Fatalf("git calls = %q, want %q", got, want)
+	}
+	if len(agent.inputs) != 1 || agent.inputs[0].CloneDir != "/tmp/proposal/repo" {
+		t.Fatalf("agent inputs = %#v", agent.inputs)
 	}
 }
 
@@ -437,7 +471,7 @@ https://github.com/example/project/pull/42`,
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := parsePRURL(tt.output)
+			got, err := gitmanager.ParsePRURL(tt.output)
 			if err != nil {
 				t.Fatalf("parsePRURL() returned error: %v", err)
 			}
@@ -671,4 +705,47 @@ func assertLogEvent(t *testing.T, events []logEvent, module string, logType stri
 	}
 
 	t.Fatalf("missing log event module=%q type=%q message containing %q in %#v", module, logType, message, events)
+}
+
+type fakeGitManager struct {
+	calls     []string
+	workspace gitmanager.Workspace
+	status    string
+	prURL     string
+	err       error
+}
+
+func (manager *fakeGitManager) Clone(ctx context.Context) (gitmanager.Workspace, error) {
+	manager.calls = append(manager.calls, "clone")
+	return manager.workspace, manager.err
+}
+
+func (manager *fakeGitManager) Close(workspace gitmanager.Workspace) error {
+	manager.calls = append(manager.calls, "close")
+	return nil
+}
+
+func (manager *fakeGitManager) StatusShort(ctx context.Context, cloneDir string) (string, error) {
+	manager.calls = append(manager.calls, "status")
+	return manager.status, manager.err
+}
+
+func (manager *fakeGitManager) CheckoutNewBranch(ctx context.Context, cloneDir string, branchName string) error {
+	manager.calls = append(manager.calls, "checkout-new")
+	return manager.err
+}
+
+func (manager *fakeGitManager) CommitAllAndPush(ctx context.Context, cloneDir string, branchName string, message string, setUpstream bool) error {
+	manager.calls = append(manager.calls, "commit-push")
+	return manager.err
+}
+
+func (manager *fakeGitManager) CreatePullRequest(ctx context.Context, cloneDir string, request gitmanager.PullRequest) (string, error) {
+	manager.calls = append(manager.calls, "create-pr")
+	return manager.prURL, manager.err
+}
+
+func (manager *fakeGitManager) CommentPullRequest(ctx context.Context, cloneDir string, prURL string, body string) error {
+	manager.calls = append(manager.calls, "comment-pr")
+	return manager.err
 }

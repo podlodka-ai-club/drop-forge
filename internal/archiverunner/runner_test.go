@@ -84,6 +84,48 @@ func TestRunnerHappyPathResolvesPRBranchCommitsAndPushes(t *testing.T) {
 	}
 }
 
+func TestRunnerGitLabModeResolvesMRBranchCommitsAndPushes(t *testing.T) {
+	cfg := validConfig()
+	cfg.GitProvider = config.GitProviderGitLab
+	cfg.GHPath = ""
+	cfg.GLabPath = "glab"
+	fake := &fakeCommandRunner{
+		responses: []fakeResponse{
+			{},
+			{stdout: `{"source_branch":"codex/proposal/gitlab"}`},
+			{},
+			{stdout: " M internal/file.go\n"},
+			{},
+			{},
+			{},
+		},
+	}
+	runner := &Runner{
+		Config:    cfg,
+		Command:   fake,
+		Agent:     &fakeAgentExecutor{},
+		Stdout:    io.Discard,
+		Stderr:    io.Discard,
+		MkdirTemp: func(dir string, pattern string) (string, error) { return "/tmp/orchv3-archive", nil },
+		RemoveAll: func(path string) error { return nil },
+	}
+
+	err := runner.Run(context.Background(), ArchiveInput{
+		Identifier:  "ENG-1",
+		Title:       "Archive feature",
+		AgentPrompt: "Task context",
+		PRURL:       "https://gitlab.com/example/repo/-/merge_requests/42",
+	})
+	if err != nil {
+		t.Fatalf("Run() returned error: %v", err)
+	}
+
+	cloneDir := "/tmp/orchv3-archive/repo"
+	assertCommand(t, fake.commands[1], "glab", []string{"mr", "view", "https://gitlab.com/example/repo/-/merge_requests/42", "--output", "json"}, cloneDir)
+	assertCommand(t, fake.commands[2], "git", []string{"checkout", "codex/proposal/gitlab"}, cloneDir)
+	assertCommand(t, fake.commands[6], "git", []string{"push", "origin", "codex/proposal/gitlab"}, cloneDir)
+}
+
 func TestRunnerUsesInjectedGitManager(t *testing.T) {
 	git := &fakeGitManager{
 		workspace:      gitmanager.Workspace{TempDir: "/tmp/archive", CloneDir: "/tmp/archive/repo"},
@@ -158,8 +200,8 @@ func TestRunnerUsesProvidedBranchWithoutGitHubLookupAndCleansTemp(t *testing.T) 
 	}
 	assertCommand(t, fake.commands[1], "git", []string{"checkout", "feature/task"}, "/tmp/orchv3-archive/repo")
 	for _, command := range fake.commands {
-		if command.Name == "gh" {
-			t.Fatalf("unexpected gh command: %#v", command)
+		if command.Name == "gh" || command.Name == "glab" {
+			t.Fatalf("unexpected provider command: %#v", command)
 		}
 	}
 }
@@ -307,6 +349,7 @@ func validConfig() config.ProposalRunnerConfig {
 		GitPath:       "git",
 		CodexPath:     "codex",
 		GHPath:        "gh",
+		GLabPath:      "glab",
 	}
 }
 

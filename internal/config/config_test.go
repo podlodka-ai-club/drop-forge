@@ -21,9 +21,11 @@ var envKeys = []string{
 	"PROPOSAL_PR_TITLE_PREFIX",
 	"PROPOSAL_CLEANUP_TEMP",
 	"PROPOSAL_POLL_INTERVAL",
+	"PROPOSAL_GIT_PROVIDER",
 	"PROPOSAL_GIT_PATH",
 	"PROPOSAL_CODEX_PATH",
 	"PROPOSAL_GH_PATH",
+	"PROPOSAL_GLAB_PATH",
 	"LINEAR_API_URL",
 	"LINEAR_API_TOKEN",
 	"LINEAR_PROJECT_ID",
@@ -75,6 +77,12 @@ func TestLoadUsesDefaults(t *testing.T) {
 
 	if cfg.ProposalRunner.GitPath != defaultProposalGitPath {
 		t.Fatalf("ProposalRunner.GitPath = %q, want %q", cfg.ProposalRunner.GitPath, defaultProposalGitPath)
+	}
+	if cfg.ProposalRunner.GitProvider != GitProviderGitHub {
+		t.Fatalf("ProposalRunner.GitProvider = %q, want %q", cfg.ProposalRunner.GitProvider, GitProviderGitHub)
+	}
+	if cfg.ProposalRunner.GLabPath != defaultProposalGLabPath {
+		t.Fatalf("ProposalRunner.GLabPath = %q, want %q", cfg.ProposalRunner.GLabPath, defaultProposalGLabPath)
 	}
 
 	if cfg.TaskManager.APIURL != defaultLinearAPIURL {
@@ -160,9 +168,11 @@ func TestLoadReadsEnvironment(t *testing.T) {
 	t.Setenv("PROPOSAL_PR_TITLE_PREFIX", "Spec:")
 	t.Setenv("PROPOSAL_CLEANUP_TEMP", "true")
 	t.Setenv("PROPOSAL_POLL_INTERVAL", "1m")
+	t.Setenv("PROPOSAL_GIT_PROVIDER", "gitlab")
 	t.Setenv("PROPOSAL_GIT_PATH", "/usr/local/bin/git")
 	t.Setenv("PROPOSAL_CODEX_PATH", "/usr/local/bin/codex")
 	t.Setenv("PROPOSAL_GH_PATH", "/usr/local/bin/gh")
+	t.Setenv("PROPOSAL_GLAB_PATH", "/usr/local/bin/glab")
 	t.Setenv("LINEAR_API_URL", "https://linear.example/graphql")
 	t.Setenv("LINEAR_API_TOKEN", "linear-token")
 	t.Setenv("LINEAR_PROJECT_ID", "project-123")
@@ -226,11 +236,17 @@ func TestLoadReadsEnvironment(t *testing.T) {
 	if runnerCfg.GitPath != "/usr/local/bin/git" {
 		t.Fatalf("GitPath = %q", runnerCfg.GitPath)
 	}
+	if runnerCfg.GitProvider != "gitlab" {
+		t.Fatalf("GitProvider = %q", runnerCfg.GitProvider)
+	}
 	if runnerCfg.CodexPath != "/usr/local/bin/codex" {
 		t.Fatalf("CodexPath = %q", runnerCfg.CodexPath)
 	}
 	if runnerCfg.GHPath != "/usr/local/bin/gh" {
 		t.Fatalf("GHPath = %q", runnerCfg.GHPath)
+	}
+	if runnerCfg.GLabPath != "/usr/local/bin/glab" {
+		t.Fatalf("GLabPath = %q", runnerCfg.GLabPath)
 	}
 
 	taskManagerCfg := cfg.TaskManager
@@ -436,6 +452,7 @@ func TestProposalRunnerConfigValidate(t *testing.T) {
 		GitPath:       "git",
 		CodexPath:     "codex",
 		GHPath:        "gh",
+		GLabPath:      "glab",
 	}
 
 	tests := []struct {
@@ -444,7 +461,14 @@ func TestProposalRunnerConfigValidate(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name: "valid",
+			name: "github default",
+		},
+		{
+			name: "gitlab mode",
+			mutate: func(cfg *ProposalRunnerConfig) {
+				cfg.GitProvider = GitProviderGitLab
+				cfg.GHPath = ""
+			},
 		},
 		{
 			name: "missing repository",
@@ -459,6 +483,29 @@ func TestProposalRunnerConfigValidate(t *testing.T) {
 				cfg.GitPath = " "
 			},
 			wantErr: "PROPOSAL_GIT_PATH",
+		},
+		{
+			name: "missing selected github cli path",
+			mutate: func(cfg *ProposalRunnerConfig) {
+				cfg.GHPath = " "
+			},
+			wantErr: "PROPOSAL_GH_PATH",
+		},
+		{
+			name: "missing selected gitlab cli path",
+			mutate: func(cfg *ProposalRunnerConfig) {
+				cfg.GitProvider = GitProviderGitLab
+				cfg.GLabPath = " "
+				cfg.GHPath = " "
+			},
+			wantErr: "PROPOSAL_GLAB_PATH",
+		},
+		{
+			name: "unsupported provider",
+			mutate: func(cfg *ProposalRunnerConfig) {
+				cfg.GitProvider = "bitbucket"
+			},
+			wantErr: "PROPOSAL_GIT_PROVIDER",
 		},
 	}
 

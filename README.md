@@ -1,6 +1,6 @@
 # orchv3
 
-`orchv3` — Go CLI для proposal/apply/archive оркестрации. Утилита запускает постоянный мониторинг Linear-задач, создает OpenSpec proposal PR для задач, готовых к proposal, применяет принятые OpenSpec changes для задач, готовых к code, и архивирует завершенные changes для задач, готовых к archive.
+`orchv3` — Go CLI для proposal/apply/archive оркестрации. Утилита запускает постоянный мониторинг Linear-задач, создает OpenSpec proposal review request для задач, готовых к proposal, применяет принятые OpenSpec changes для задач, готовых к code, и архивирует завершенные changes для задач, готовых к archive.
 
 Детали proposal runner workflow и prerequisites вынесены в [docs/proposal-runner.md](docs/proposal-runner.md). Детали Linear-facing слоя описаны в [docs/linear-task-manager.md](docs/linear-task-manager.md).
 
@@ -8,9 +8,9 @@
 
 - запустить постоянный orchestration monitor без аргументов CLI;
 - запустить proposal workflow во внешнем репозитории через `AgentExecutor`;
-- для Linear-задач в `Ready to Propose` создать proposal PR, прикрепить PR URL и перевести задачу в `Need Proposal Review`;
-- для Linear-задач в `Ready to Code` взять attached PR URL или branch, применить OpenSpec Apply в той же ветке и перевести задачу в `Need Code Review`;
-- для Linear-задач в `Ready to Archive` взять attached PR URL или branch, выполнить OpenSpec Archive в той же ветке и перевести задачу в `Need Archive Review`;
+- для Linear-задач в `Ready to Propose` создать GitHub PR или GitLab MR, прикрепить review request URL и перевести задачу в `Need Proposal Review`;
+- для Linear-задач в `Ready to Code` взять attached review request URL или branch, применить OpenSpec Apply в той же ветке и перевести задачу в `Need Code Review`;
+- для Linear-задач в `Ready to Archive` взять attached review request URL или branch, выполнить OpenSpec Archive в той же ветке и перевести задачу в `Need Archive Review`;
 - писать структурные JSON Lines логи workflow в `stderr` или настроенный sink.
 
 Ручной запуск proposal по описанию задачи из args/stdin удален. Любые CLI-аргументы или непустой `stdin` возвращают usage error.
@@ -21,16 +21,16 @@ Default runtime связывает `CoreOrch`, `TaskManager`, `proposalrunner`, 
 
 - `TaskManager` читает managed Linear tasks из одного настроенного project;
 - `CoreOrch` маршрутизирует `LINEAR_STATE_READY_TO_PROPOSE_ID` в proposal workflow, `LINEAR_STATE_READY_TO_CODE_ID` в Apply workflow и `LINEAR_STATE_READY_TO_ARCHIVE_ID` в Archive workflow;
-- `CoreOrch` формирует input из `identifier`, `title`, `description`, `comments` и, для Apply/Archive, attached PR URL или branch;
-- `proposalrunner` создает OpenSpec proposal PR во внешнем репозитории;
+- `CoreOrch` формирует input из `identifier`, `title`, `description`, `comments` и, для Apply/Archive, attached review request URL или branch;
+- `proposalrunner` создает OpenSpec proposal review request во внешнем репозитории через выбранный Git provider;
 - `applyrunner` клонирует репозиторий, переключается на ветку задачи, запускает OpenSpec Apply через Codex CLI, коммитит и пушит изменения без создания нового PR;
 - `archiverunner` клонирует репозиторий, переключается на ветку задачи, запускает OpenSpec Archive через Codex CLI, коммитит и пушит изменения без создания нового PR;
-- после успеха `CoreOrch` вызывает `TaskManager.AddPR(...)`, затем `TaskManager.MoveTask(...)` в `LINEAR_STATE_NEED_PROPOSAL_REVIEW_ID`.
+- после успеха `CoreOrch` вызывает `TaskManager.AddPR(...)` с opaque review request URL, затем `TaskManager.MoveTask(...)` в `LINEAR_STATE_NEED_PROPOSAL_REVIEW_ID`.
 - после успешного Apply `CoreOrch` переводит задачу из `LINEAR_STATE_CODE_IN_PROGRESS_ID` в `LINEAR_STATE_NEED_CODE_REVIEW_ID`.
 - после успешного Archive `CoreOrch` переводит задачу из `LINEAR_STATE_ARCHIVING_IN_PROGRESS_ID` в `LINEAR_STATE_NEED_ARCHIVE_REVIEW_ID`.
 - после каждого прохода monitor ждет `PROPOSAL_POLL_INTERVAL` и запускает следующий проход до остановки процесса.
 
-Если отдельный orchestration pass падает, monitor пишет structured error и продолжает следующий проход после polling interval. Если runner падает или Linear не смог прикрепить PR, задача не переводится в review state. Если PR уже прикреплен, но move task упал, ошибка логируется с контекстом задачи и PR URL.
+Если отдельный orchestration pass падает, monitor пишет structured error и продолжает следующий проход после polling interval. Если runner падает или Linear не смог прикрепить review request URL, задача не переводится в review state. Если URL уже прикреплен, но move task упал, ошибка логируется с контекстом задачи и URL.
 
 ## Зависимости
 
@@ -39,8 +39,9 @@ Default runtime связывает `CoreOrch`, `TaskManager`, `proposalrunner`, 
 - Go `1.24.2` или совместимая версия для сборки и запуска проекта;
 - `git`;
 - `codex` для текущей реализации agent executor;
-- `gh`;
-- доступ к целевому GitHub-репозиторию и предварительная аутентификация `gh`;
+- `gh` для `PROPOSAL_GIT_PROVIDER=github` или default-режима;
+- `glab` для `PROPOSAL_GIT_PROVIDER=gitlab`;
+- доступ к целевому GitHub/GitLab-репозиторию и предварительная аутентификация выбранного CLI (`gh auth login` или `glab auth login`, для self-managed GitLab также с нужным hostname);
 - Linear API token и настроенные workflow state IDs для orchestration monitor;
 - настроенный `.env` с runtime-параметрами.
 
@@ -50,15 +51,16 @@ Go-модуль и зависимости зафиксированы в [go.mod]
 
 1. Создайте локальный `.env` на основе [.env.example](.env.example).
 2. Заполните значения переменных для вашей среды.
-3. Убедитесь, что `git`, `codex` и `gh` доступны по путям из окружения или через `PATH`.
+3. Убедитесь, что `git`, `codex` и CLI выбранного provider-а (`gh` или `glab`) доступны по путям из окружения или через `PATH`.
 
 Полный список поддерживаемых переменных хранится в [.env.example](.env.example), а `.env` подхватывается через `godotenv`. Значения из process environment имеют приоритет над `.env`.
 
 Практически важные переменные:
 
 - `PROPOSAL_REPOSITORY_URL` — обязательный URL целевого репозитория;
-- `PROPOSAL_BASE_BRANCH`, `PROPOSAL_REMOTE_NAME`, `PROPOSAL_BRANCH_PREFIX`, `PROPOSAL_PR_TITLE_PREFIX` — параметры git/GitHub workflow;
-- `PROPOSAL_GIT_PATH`, `PROPOSAL_CODEX_PATH`, `PROPOSAL_GH_PATH` — пути к внешним CLI; `PROPOSAL_CODEX_PATH` относится к текущей Codex-реализации `AgentExecutor`;
+- `PROPOSAL_BASE_BRANCH`, `PROPOSAL_REMOTE_NAME`, `PROPOSAL_BRANCH_PREFIX`, `PROPOSAL_PR_TITLE_PREFIX` — параметры git/review request workflow;
+- `PROPOSAL_GIT_PROVIDER` — выбранный provider review request operations: `github` по умолчанию или `gitlab`;
+- `PROPOSAL_GIT_PATH`, `PROPOSAL_CODEX_PATH`, `PROPOSAL_GH_PATH`, `PROPOSAL_GLAB_PATH` — пути к внешним CLI; `PROPOSAL_CODEX_PATH` относится к текущей Codex-реализации `AgentExecutor`, `PROPOSAL_GH_PATH` нужен только для GitHub, `PROPOSAL_GLAB_PATH` только для GitLab;
 - `PROPOSAL_CLEANUP_TEMP` — удалять ли временную директорию после выполнения;
 - `PROPOSAL_POLL_INTERVAL` — интервал между проходами orchestration monitor, например `30s` или `1m`;
 - `LINEAR_API_URL`, `LINEAR_API_TOKEN`, `LINEAR_PROJECT_ID` — подключение к Linear и фильтр по проекту;
@@ -82,11 +84,11 @@ go run ./cmd/orchv3
 Минимальная ручная проверка:
 
 1. В Linear подготовьте задачу в state, чей ID указан в `LINEAR_STATE_READY_TO_PROPOSE_ID`.
-2. Убедитесь, что `.env` заполнен для `PROPOSAL_*`, `LINEAR_*`, `git`, `codex` и `gh`.
+2. Убедитесь, что `.env` заполнен для `PROPOSAL_*`, `LINEAR_*`, `git`, `codex` и выбранного provider CLI.
 3. Запустите `go run ./cmd/orchv3`.
-4. Проверьте, что в Linear к задаче прикрепился PR URL, а state сменился на `LINEAR_STATE_NEED_PROPOSAL_REVIEW_ID`.
-5. Для Apply подготовьте задачу в state из `LINEAR_STATE_READY_TO_CODE_ID` с attached Pull Request URL; после успешного прохода state должен смениться на `LINEAR_STATE_NEED_CODE_REVIEW_ID`, а изменения появиться в ветке PR.
-6. Для Archive подготовьте задачу в state из `LINEAR_STATE_READY_TO_ARCHIVE_ID` с attached Pull Request URL; после успешного прохода state должен смениться на `LINEAR_STATE_NEED_ARCHIVE_REVIEW_ID`, а archive commit появиться в ветке PR.
+4. Проверьте, что в Linear к задаче прикрепился PR/MR URL, а state сменился на `LINEAR_STATE_NEED_PROPOSAL_REVIEW_ID`.
+5. Для Apply подготовьте задачу в state из `LINEAR_STATE_READY_TO_CODE_ID` с attached PR/MR URL; после успешного прохода state должен смениться на `LINEAR_STATE_NEED_CODE_REVIEW_ID`, а изменения появиться в ветке review request.
+6. Для Archive подготовьте задачу в state из `LINEAR_STATE_READY_TO_ARCHIVE_ID` с attached PR/MR URL; после успешного прохода state должен смениться на `LINEAR_STATE_NEED_ARCHIVE_REVIEW_ID`, а archive commit появиться в ветке review request.
 
 ## Ключевые директории
 

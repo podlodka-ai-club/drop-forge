@@ -159,12 +159,15 @@ func validateConfig(cfg config.ProposalRunnerConfig) error {
 		"PROPOSAL_REMOTE_NAME": cfg.RemoteName,
 		"PROPOSAL_GIT_PATH":    cfg.GitPath,
 		"PROPOSAL_CODEX_PATH":  cfg.CodexPath,
-		"PROPOSAL_GH_PATH":     cfg.GHPath,
 	}
 	for key, value := range requiredValues {
 		if strings.TrimSpace(value) == "" {
 			return fmt.Errorf("%s must not be empty", key)
 		}
+	}
+
+	if err := cfg.ValidateProvider(); err != nil {
+		return err
 	}
 
 	return nil

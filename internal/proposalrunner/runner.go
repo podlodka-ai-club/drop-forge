@@ -151,7 +151,7 @@ func (runner *Runner) Run(ctx context.Context, input ProposalInput) (prURL strin
 	if err != nil {
 		return "", err
 	}
-	logger.Infof("github", "created PR %s", prURL)
+	logger.Infof(runner.Config.NormalizedGitProvider(), "created review request %s", prURL)
 
 	if err := git.CommentPullRequest(ctx, workspace.CloneDir, prURL, agentResult.FinalMessage); err != nil {
 		return "", err

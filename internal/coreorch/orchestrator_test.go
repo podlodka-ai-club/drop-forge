@@ -71,6 +71,24 @@ func TestRunProposalsOnceProcessesOnlyReadyTasksSequentially(t *testing.T) {
 	assertLogContains(t, events, "processed proposal task=issue-3 identifier=ENG-3 pr=https://github.com/example/repo/pull/2")
 }
 
+func TestRunProposalsOnceAttachesGitLabMRURLWithoutInspectingIt(t *testing.T) {
+	taskManager := &recordingTaskManager{
+		tasks: []taskmanager.Task{readyTask("issue-1", "ENG-1", "GitLab proposal")},
+	}
+	runner := &recordingProposalRunner{
+		urls: []string{"https://gitlab.com/example/repo/-/merge_requests/7"},
+	}
+	orch := testOrchestrator(taskManager, runner, nil)
+
+	if err := orch.RunProposalsOnce(context.Background()); err != nil {
+		t.Fatalf("RunProposalsOnce() returned error: %v", err)
+	}
+
+	if got := strings.Join(taskManager.addPRURLs, ","); got != "https://gitlab.com/example/repo/-/merge_requests/7" {
+		t.Fatalf("AddPR URLs = %q", got)
+	}
+}
+
 func TestRunProposalsOnceWithNoReadyTasksDoesNotMutateTasks(t *testing.T) {
 	taskManager := &recordingTaskManager{
 		tasks: []taskmanager.Task{{
@@ -546,6 +564,20 @@ func TestBuildApplyInputIncludesTaskPayloadAndBranchSource(t *testing.T) {
 	}
 }
 
+func TestBuildApplyInputPassesGitLabMRURLAsOpaqueBranchSource(t *testing.T) {
+	task := readyCodeTask("issue-1", "ENG-1", "Apply flow", taskmanager.PullRequest{
+		URL: "https://gitlab.com/example/repo/-/merge_requests/42",
+	})
+
+	got, err := BuildApplyInput(task)
+	if err != nil {
+		t.Fatalf("BuildApplyInput() error = %v", err)
+	}
+	if got.PRURL != "https://gitlab.com/example/repo/-/merge_requests/42" || got.BranchName != "" {
+		t.Fatalf("branch source = pr %q branch %q", got.PRURL, got.BranchName)
+	}
+}
+
 func TestBuildArchiveInputIncludesTaskPayloadAndBranchSource(t *testing.T) {
 	task := readyArchiveTask("issue-1", "ENG-1", "Archive flow", taskmanager.PullRequest{
 		URL:    "https://github.com/example/repo/pull/42",
@@ -566,6 +598,20 @@ func TestBuildArchiveInputIncludesTaskPayloadAndBranchSource(t *testing.T) {
 	}
 	if !strings.Contains(got.AgentPrompt, "Comments:") || !strings.Contains(got.AgentPrompt, "Use existing patterns.") {
 		t.Fatalf("agent prompt = %q", got.AgentPrompt)
+	}
+}
+
+func TestBuildArchiveInputPassesGitLabMRURLAsOpaqueBranchSource(t *testing.T) {
+	task := readyArchiveTask("issue-1", "ENG-1", "Archive flow", taskmanager.PullRequest{
+		URL: "https://gitlab.com/example/repo/-/merge_requests/42",
+	})
+
+	got, err := BuildArchiveInput(task)
+	if err != nil {
+		t.Fatalf("BuildArchiveInput() error = %v", err)
+	}
+	if got.PRURL != "https://gitlab.com/example/repo/-/merge_requests/42" || got.BranchName != "" {
+		t.Fatalf("branch source = pr %q branch %q", got.PRURL, got.BranchName)
 	}
 }
 

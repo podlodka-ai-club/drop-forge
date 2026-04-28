@@ -25,8 +25,10 @@ type Config struct {
 	BaseBranch    string
 	RemoteName    string
 	CleanupTemp   bool
+	GitProvider   string
 	GitPath       string
 	GHPath        string
+	GLabPath      string
 	TempPattern   string
 }
 
@@ -53,14 +55,23 @@ type PullRequest struct {
 	Body       string
 }
 
+type providerAdapter interface {
+	name() string
+	resolveBranch(ctx context.Context, cloneDir string, requestURL string) (string, error)
+	create(ctx context.Context, cloneDir string, request PullRequest) (string, error)
+	comment(ctx context.Context, cloneDir string, requestURL string, body string) error
+}
+
 func ConfigFromProposal(cfg config.ProposalRunnerConfig) Config {
 	return Config{
 		RepositoryURL: cfg.RepositoryURL,
 		BaseBranch:    cfg.BaseBranch,
 		RemoteName:    cfg.RemoteName,
 		CleanupTemp:   cfg.CleanupTemp,
+		GitProvider:   cfg.NormalizedGitProvider(),
 		GitPath:       cfg.GitPath,
 		GHPath:        cfg.GHPath,
+		GLabPath:      cfg.GLabPath,
 		TempPattern:   defaultTempPattern,
 	}
 }
@@ -185,6 +196,62 @@ func (manager *Manager) CommitAllAndPush(ctx context.Context, cloneDir string, b
 
 func (manager *Manager) ResolvePullRequestBranch(ctx context.Context, cloneDir string, prURL string) (string, error) {
 	prURL = strings.TrimSpace(prURL)
+	provider, err := manager.provider()
+	if err != nil {
+		return "", err
+	}
+
+	return provider.resolveBranch(ctx, cloneDir, prURL)
+}
+
+func (manager *Manager) CreatePullRequest(ctx context.Context, cloneDir string, request PullRequest) (string, error) {
+	provider, err := manager.provider()
+	if err != nil {
+		return "", err
+	}
+
+	return provider.create(ctx, cloneDir, request)
+}
+
+func (manager *Manager) CommentPullRequest(ctx context.Context, cloneDir string, prURL string, body string) error {
+	provider, err := manager.provider()
+	if err != nil {
+		return err
+	}
+
+	return provider.comment(ctx, cloneDir, prURL, body)
+}
+
+func (manager *Manager) provider() (providerAdapter, error) {
+	switch manager.gitProvider() {
+	case config.GitProviderGitHub:
+		return githubProvider{manager: manager}, nil
+	case config.GitProviderGitLab:
+		return gitlabProvider{manager: manager}, nil
+	default:
+		return nil, fmt.Errorf("unsupported git provider %q", manager.Config.GitProvider)
+	}
+}
+
+func (manager *Manager) gitProvider() string {
+	provider := strings.ToLower(strings.TrimSpace(manager.Config.GitProvider))
+	if provider == "" {
+		return config.GitProviderGitHub
+	}
+
+	return provider
+}
+
+type githubProvider struct {
+	manager *Manager
+}
+
+func (provider githubProvider) name() string {
+	return config.GitProviderGitHub
+}
+
+func (provider githubProvider) resolveBranch(ctx context.Context, cloneDir string, prURL string) (string, error) {
+	manager := provider.manager
 	var branchOutput bytes.Buffer
 	args := []string{"pr", "view", prURL, "--json", "headRefName", "--jq", ".headRefName"}
 	manager.logger(writerOrDiscard(manager.Stdout)).Infof("github", "%s %s", manager.Config.GHPath, strings.Join(args, " "))
@@ -205,7 +272,8 @@ func (manager *Manager) ResolvePullRequestBranch(ctx context.Context, cloneDir s
 	return branch, nil
 }
 
-func (manager *Manager) CreatePullRequest(ctx context.Context, cloneDir string, request PullRequest) (string, error) {
+func (provider githubProvider) create(ctx context.Context, cloneDir string, request PullRequest) (string, error) {
+	manager := provider.manager
 	baseBranch := strings.TrimSpace(request.BaseBranch)
 	if baseBranch == "" {
 		baseBranch = manager.Config.BaseBranch
@@ -237,7 +305,8 @@ func (manager *Manager) CreatePullRequest(ctx context.Context, cloneDir string, 
 	return prURL, nil
 }
 
-func (manager *Manager) CommentPullRequest(ctx context.Context, cloneDir string, prURL string, body string) error {
+func (provider githubProvider) comment(ctx context.Context, cloneDir string, prURL string, body string) error {
+	manager := provider.manager
 	logger := manager.logger(writerOrDiscard(manager.Stdout))
 	if strings.TrimSpace(body) == "" {
 		logger.Infof("github", "skipped PR comment: final agent response is empty")
@@ -260,10 +329,98 @@ func (manager *Manager) CommentPullRequest(ctx context.Context, cloneDir string,
 	return nil
 }
 
+type gitlabProvider struct {
+	manager *Manager
+}
+
+func (provider gitlabProvider) name() string {
+	return config.GitProviderGitLab
+}
+
+func (provider gitlabProvider) resolveBranch(ctx context.Context, cloneDir string, mrURL string) (string, error) {
+	manager := provider.manager
+	var branchOutput bytes.Buffer
+	args := []string{"mr", "view", mrURL, "--output", "json"}
+	manager.logger(writerOrDiscard(manager.Stdout)).Infof("gitlab", "%s %s", manager.Config.GLabPath, strings.Join(args, " "))
+	if err := manager.runLoggedCommand(ctx, commandrunner.Command{
+		Name:   manager.Config.GLabPath,
+		Args:   args,
+		Dir:    cloneDir,
+		Stdout: &branchOutput,
+	}, "gitlab", writerOrDiscard(manager.Stdout), writerOrDiscard(manager.Stderr)); err != nil {
+		return "", fmt.Errorf("gitlab resolve mr branch %s: %w", mrURL, err)
+	}
+
+	branch, err := parseGitLabSourceBranch(branchOutput.String())
+	if err != nil {
+		return "", fmt.Errorf("gitlab resolve mr branch %s: %w", mrURL, err)
+	}
+
+	return branch, nil
+}
+
+func (provider gitlabProvider) create(ctx context.Context, cloneDir string, request PullRequest) (string, error) {
+	manager := provider.manager
+	baseBranch := strings.TrimSpace(request.BaseBranch)
+	if baseBranch == "" {
+		baseBranch = manager.Config.BaseBranch
+	}
+	var mrOutput bytes.Buffer
+	args := []string{
+		"mr", "create",
+		"--source-branch", request.HeadBranch,
+		"--target-branch", baseBranch,
+		"--title", request.Title,
+		"--description", request.Body,
+		"--yes",
+	}
+
+	manager.logger(writerOrDiscard(manager.Stdout)).Infof("gitlab", "%s %s", manager.Config.GLabPath, strings.Join(args, " "))
+	if err := manager.runLoggedCommand(ctx, commandrunner.Command{
+		Name:   manager.Config.GLabPath,
+		Args:   args,
+		Dir:    cloneDir,
+		Stdout: &mrOutput,
+	}, "gitlab", writerOrDiscard(manager.Stdout), writerOrDiscard(manager.Stderr)); err != nil {
+		return "", fmt.Errorf("gitlab mr create: %w", err)
+	}
+
+	mrURL, err := ParsePRURL(mrOutput.String())
+	if err != nil {
+		return "", fmt.Errorf("gitlab mr create: %w", err)
+	}
+
+	return mrURL, nil
+}
+
+func (provider gitlabProvider) comment(ctx context.Context, cloneDir string, mrURL string, body string) error {
+	manager := provider.manager
+	logger := manager.logger(writerOrDiscard(manager.Stdout))
+	if strings.TrimSpace(body) == "" {
+		logger.Infof("gitlab", "skipped MR comment: final agent response is empty")
+		return nil
+	}
+
+	args := []string{"mr", "note", "create", mrURL, "--message", body}
+	logger.Infof("gitlab", "publishing final agent response as MR comment")
+	logger.Infof("gitlab", "%s %s", manager.Config.GLabPath, strings.Join(args, " "))
+
+	if err := manager.runLoggedCommand(ctx, commandrunner.Command{
+		Name: manager.Config.GLabPath,
+		Args: args,
+		Dir:  cloneDir,
+	}, "gitlab", writerOrDiscard(manager.Stdout), writerOrDiscard(manager.Stderr)); err != nil {
+		return fmt.Errorf("gitlab final agent response comment: %w", err)
+	}
+
+	logger.Infof("gitlab", "created MR comment from final agent response")
+	return nil
+}
+
 func ParsePRURL(output string) (string, error) {
 	output = strings.TrimSpace(output)
 	if output == "" {
-		return "", errors.New("empty PR URL output")
+		return "", errors.New("empty review request URL output")
 	}
 
 	var payload struct {
@@ -284,7 +441,27 @@ func ParsePRURL(output string) (string, error) {
 		return match, nil
 	}
 
-	return "", errors.New("PR URL missing in gh output")
+	return "", errors.New("review request URL missing in provider output")
+}
+
+func parseGitLabSourceBranch(output string) (string, error) {
+	var payload struct {
+		SourceBranch     string `json:"source_branch"`
+		SourceBranchName string `json:"sourceBranch"`
+	}
+	if err := json.Unmarshal([]byte(output), &payload); err != nil {
+		return "", fmt.Errorf("parse glab mr json: %w", err)
+	}
+
+	branch := strings.TrimSpace(payload.SourceBranch)
+	if branch == "" {
+		branch = strings.TrimSpace(payload.SourceBranchName)
+	}
+	if branch == "" {
+		return "", errors.New("empty source branch")
+	}
+
+	return branch, nil
 }
 
 func (manager *Manager) runLoggedCommand(ctx context.Context, command commandrunner.Command, module string, stdout io.Writer, stderr io.Writer) error {

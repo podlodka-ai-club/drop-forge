@@ -101,6 +101,54 @@ func TestManagerResolveBranchAndCheckoutExisting(t *testing.T) {
 	assertCommand(t, fake.commands[1], "git", []string{"checkout", "feature/task"}, "/tmp/repo")
 }
 
+func TestManagerGitLabCreateResolveAndComment(t *testing.T) {
+	fake := &fakeCommandRunner{
+		responses: []fakeResponse{
+			{stdout: `{"url":"https://gitlab.com/example/repo/-/merge_requests/7"}`},
+			{stdout: `{"source_branch":"feature/task"}`},
+			{},
+		},
+	}
+	manager := newTestManager(fake, io.Discard)
+	manager.Config.GitProvider = config.GitProviderGitLab
+
+	mrURL, err := manager.CreatePullRequest(context.Background(), "/tmp/repo", PullRequest{
+		BaseBranch: "main",
+		HeadBranch: "feature/task",
+		Title:      "MR title",
+		Body:       "MR body",
+	})
+	if err != nil {
+		t.Fatalf("CreatePullRequest() returned error: %v", err)
+	}
+	if mrURL != "https://gitlab.com/example/repo/-/merge_requests/7" {
+		t.Fatalf("mrURL = %q", mrURL)
+	}
+
+	branch, err := manager.ResolvePullRequestBranch(context.Background(), "/tmp/repo", mrURL)
+	if err != nil {
+		t.Fatalf("ResolvePullRequestBranch() returned error: %v", err)
+	}
+	if branch != "feature/task" {
+		t.Fatalf("branch = %q", branch)
+	}
+
+	if err := manager.CommentPullRequest(context.Background(), "/tmp/repo", mrURL, "Final response"); err != nil {
+		t.Fatalf("CommentPullRequest() returned error: %v", err)
+	}
+
+	assertCommand(t, fake.commands[0], "glab", []string{
+		"mr", "create",
+		"--source-branch", "feature/task",
+		"--target-branch", "main",
+		"--title", "MR title",
+		"--description", "MR body",
+		"--yes",
+	}, "/tmp/repo")
+	assertCommand(t, fake.commands[1], "glab", []string{"mr", "view", mrURL, "--output", "json"}, "/tmp/repo")
+	assertCommand(t, fake.commands[2], "glab", []string{"mr", "note", "create", mrURL, "--message", "Final response"}, "/tmp/repo")
+}
+
 func TestManagerSkipsEmptyComment(t *testing.T) {
 	fake := &fakeCommandRunner{}
 	var stdout bytes.Buffer
@@ -113,6 +161,23 @@ func TestManagerSkipsEmptyComment(t *testing.T) {
 		t.Fatalf("commands len = %d, want 0", len(fake.commands))
 	}
 	if !strings.Contains(stdout.String(), "skipped PR comment") {
+		t.Fatalf("stdout = %q, want skip log", stdout.String())
+	}
+}
+
+func TestManagerSkipsEmptyGitLabComment(t *testing.T) {
+	fake := &fakeCommandRunner{}
+	var stdout bytes.Buffer
+	manager := newTestManager(fake, &stdout)
+	manager.Config.GitProvider = config.GitProviderGitLab
+
+	if err := manager.CommentPullRequest(context.Background(), "/tmp/repo", "https://gitlab.com/example/repo/-/merge_requests/7", " \n\t "); err != nil {
+		t.Fatalf("CommentPullRequest() returned error: %v", err)
+	}
+	if len(fake.commands) != 0 {
+		t.Fatalf("commands len = %d, want 0", len(fake.commands))
+	}
+	if !strings.Contains(stdout.String(), "skipped MR comment") {
 		t.Fatalf("stdout = %q, want skip log", stdout.String())
 	}
 }
@@ -176,6 +241,15 @@ func TestManagerWrapsFailures(t *testing.T) {
 			},
 			want: "github resolve pr branch",
 		},
+		{
+			name: "gitlab resolve branch",
+			run: func(manager *Manager) error {
+				manager.Config.GitProvider = config.GitProviderGitLab
+				_, err := manager.ResolvePullRequestBranch(context.Background(), "/tmp/repo", "https://gitlab.com/example/repo/-/merge_requests/7")
+				return err
+			},
+			want: "gitlab resolve mr branch",
+		},
 	}
 
 	for _, tt := range tests {
@@ -198,6 +272,8 @@ func TestManagerParsePRURL(t *testing.T) {
 		{name: "plain", output: "https://github.com/example/repo/pull/1\n", want: "https://github.com/example/repo/pull/1"},
 		{name: "json", output: `{"url":"https://github.com/example/repo/pull/2"}`, want: "https://github.com/example/repo/pull/2"},
 		{name: "mixed", output: "Created\nhttps://github.com/example/repo/pull/3\n", want: "https://github.com/example/repo/pull/3"},
+		{name: "gitlab plain", output: "https://gitlab.com/example/repo/-/merge_requests/4\n", want: "https://gitlab.com/example/repo/-/merge_requests/4"},
+		{name: "gitlab mixed", output: "Creating merge request\nhttps://gitlab.com/example/repo/-/merge_requests/5\n", want: "https://gitlab.com/example/repo/-/merge_requests/5"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -216,6 +292,32 @@ func TestManagerParsePRURL(t *testing.T) {
 	}
 }
 
+func TestParseGitLabSourceBranch(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		want   string
+	}{
+		{name: "snake case", output: `{"source_branch":"feature/task"}`, want: "feature/task"},
+		{name: "camel case", output: `{"sourceBranch":"feature/camel"}`, want: "feature/camel"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseGitLabSourceBranch(tt.output)
+			if err != nil {
+				t.Fatalf("parseGitLabSourceBranch() returned error: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("parseGitLabSourceBranch() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+
+	if _, err := parseGitLabSourceBranch(`{"source_branch":""}`); err == nil {
+		t.Fatal("parseGitLabSourceBranch() error = nil, want non-nil")
+	}
+}
+
 func newTestManager(command commandrunner.Runner, stdout io.Writer) *Manager {
 	cfg := config.ProposalRunnerConfig{
 		RepositoryURL: "git@github.com:example/repo.git",
@@ -223,6 +325,7 @@ func newTestManager(command commandrunner.Runner, stdout io.Writer) *Manager {
 		RemoteName:    "origin",
 		GitPath:       "git",
 		GHPath:        "gh",
+		GLabPath:      "glab",
 	}
 	manager := NewFromProposalConfig(cfg)
 	manager.Command = command

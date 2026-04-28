@@ -25,11 +25,17 @@ const (
 	defaultProposalGitPath       = "git"
 	defaultProposalCodexPath     = "codex"
 	defaultProposalGHPath        = "gh"
+	defaultProposalGLabPath      = "glab"
 
 	defaultLinearAPIURL         = "https://api.linear.app/graphql"
 	defaultLogstashBufferSize   = 1024
 	defaultLogstashDialTimeout  = 2 * time.Second
 	defaultProposalPollInterval = 30 * time.Second
+)
+
+const (
+	GitProviderGitHub = "github"
+	GitProviderGitLab = "gitlab"
 )
 
 type Config struct {
@@ -57,9 +63,11 @@ type ProposalRunnerConfig struct {
 	BranchPrefix  string
 	PRTitlePrefix string
 	CleanupTemp   bool
+	GitProvider   string
 	GitPath       string
 	CodexPath     string
 	GHPath        string
+	GLabPath      string
 }
 
 type LinearTaskManagerConfig struct {
@@ -116,9 +124,11 @@ func Load() (Config, error) {
 			BranchPrefix:  trimmedStringFromEnv("PROPOSAL_BRANCH_PREFIX", defaultProposalBranchPrefix),
 			PRTitlePrefix: trimmedStringFromEnv("PROPOSAL_PR_TITLE_PREFIX", defaultProposalPRTitlePrefix),
 			CleanupTemp:   cleanupTemp,
+			GitProvider:   trimmedStringFromEnv("PROPOSAL_GIT_PROVIDER", GitProviderGitHub),
 			GitPath:       trimmedStringFromEnv("PROPOSAL_GIT_PATH", defaultProposalGitPath),
 			CodexPath:     trimmedStringFromEnv("PROPOSAL_CODEX_PATH", defaultProposalCodexPath),
 			GHPath:        trimmedStringFromEnv("PROPOSAL_GH_PATH", defaultProposalGHPath),
+			GLabPath:      trimmedStringFromEnv("PROPOSAL_GLAB_PATH", defaultProposalGLabPath),
 		},
 		TaskManager: LinearTaskManagerConfig{
 			APIURL:                     trimmedStringFromEnv("LINEAR_API_URL", defaultLinearAPIURL),
@@ -197,13 +207,42 @@ func (cfg ProposalRunnerConfig) Validate() error {
 		"PROPOSAL_PR_TITLE_PREFIX": cfg.PRTitlePrefix,
 		"PROPOSAL_GIT_PATH":        cfg.GitPath,
 		"PROPOSAL_CODEX_PATH":      cfg.CodexPath,
-		"PROPOSAL_GH_PATH":         cfg.GHPath,
 	}
 
 	for key, value := range requiredValues {
 		if strings.TrimSpace(value) == "" {
 			return fmt.Errorf("%s must not be empty", key)
 		}
+	}
+
+	if err := cfg.ValidateProvider(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (cfg ProposalRunnerConfig) NormalizedGitProvider() string {
+	provider := strings.ToLower(strings.TrimSpace(cfg.GitProvider))
+	if provider == "" {
+		return GitProviderGitHub
+	}
+
+	return provider
+}
+
+func (cfg ProposalRunnerConfig) ValidateProvider() error {
+	switch cfg.NormalizedGitProvider() {
+	case GitProviderGitHub:
+		if strings.TrimSpace(cfg.GHPath) == "" {
+			return errors.New("PROPOSAL_GH_PATH must not be empty for github provider")
+		}
+	case GitProviderGitLab:
+		if strings.TrimSpace(cfg.GLabPath) == "" {
+			return errors.New("PROPOSAL_GLAB_PATH must not be empty for gitlab provider")
+		}
+	default:
+		return fmt.Errorf("PROPOSAL_GIT_PROVIDER must be one of %q or %q, got %q", GitProviderGitHub, GitProviderGitLab, cfg.GitProvider)
 	}
 
 	return nil

@@ -7,8 +7,10 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"orchv3/internal/config"
+	"orchv3/internal/events"
 )
 
 func TestManagerGetTasksLogsProjectAndStateContext(t *testing.T) {
@@ -58,6 +60,85 @@ func TestManagerMoveTaskWrapsErrorAndLogs(t *testing.T) {
 	events := decodeTaskManagerEvents(t, logs.String())
 	assertTaskManagerLog(t, events, "taskmanager", "move task=issue-1 state=state-2")
 	assertTaskManagerLog(t, events, "taskmanager", "move task=issue-1 state=state-2: boom")
+}
+
+func TestManagerMoveTaskPublishesStatusChangedEvent(t *testing.T) {
+	publisher := &recordingPublisher{}
+	manager := &Manager{
+		Config:    validConfig(),
+		Client:    fakeClient{},
+		Publisher: publisher,
+	}
+
+	if err := manager.MoveTask(context.Background(), "issue-1", "state-2"); err != nil {
+		t.Fatalf("MoveTask() returned error: %v", err)
+	}
+
+	if len(publisher.events) != 1 {
+		t.Fatalf("published events len = %d, want 1", len(publisher.events))
+	}
+	event := publisher.events[0]
+	if event.Type != events.TaskStatusChangedType {
+		t.Fatalf("event type = %q, want %q", event.Type, events.TaskStatusChangedType)
+	}
+	if event.OccurredAt.IsZero() {
+		t.Fatal("event occurred at is zero")
+	}
+	payload, ok := event.Payload.(events.TaskStatusChanged)
+	if !ok {
+		t.Fatalf("payload type = %T, want TaskStatusChanged", event.Payload)
+	}
+	if payload.TaskID != "issue-1" || payload.TargetStateID != "state-2" {
+		t.Fatalf("payload = %#v", payload)
+	}
+	if payload.OccurredAt.IsZero() {
+		t.Fatal("payload occurred at is zero")
+	}
+}
+
+func TestManagerMoveTaskDoesNotPublishWhenLinearMoveFails(t *testing.T) {
+	publisher := &recordingPublisher{}
+	manager := &Manager{
+		Config:    validConfig(),
+		Client:    fakeClient{moveErr: errors.New("linear down")},
+		Publisher: publisher,
+	}
+
+	err := manager.MoveTask(context.Background(), "issue-1", "state-2")
+	if err == nil {
+		t.Fatal("MoveTask() error = nil, want non-nil")
+	}
+	if len(publisher.events) != 0 {
+		t.Fatalf("published events len = %d, want 0", len(publisher.events))
+	}
+}
+
+func TestManagerMoveTaskKeepsSuccessWhenPublisherFails(t *testing.T) {
+	var logs bytes.Buffer
+	manager := &Manager{
+		Config:    validConfig(),
+		Client:    fakeClient{},
+		LogWriter: &logs,
+		Publisher: &recordingPublisher{err: errors.New("telegram failed")},
+	}
+
+	if err := manager.MoveTask(context.Background(), "issue-1", "state-2"); err != nil {
+		t.Fatalf("MoveTask() returned error: %v", err)
+	}
+
+	events := decodeTaskManagerEvents(t, logs.String())
+	assertTaskManagerLog(t, events, "taskmanager", "publish event=task.status_changed task=issue-1 state=state-2: telegram failed")
+}
+
+func TestManagerMoveTaskSucceedsWithoutPublisher(t *testing.T) {
+	manager := &Manager{
+		Config: validConfig(),
+		Client: fakeClient{},
+	}
+
+	if err := manager.MoveTask(context.Background(), "issue-1", "state-2"); err != nil {
+		t.Fatalf("MoveTask() returned error: %v", err)
+	}
 }
 
 func TestManagerMoveTaskUsesConfiguredReviewStateIDs(t *testing.T) {
@@ -215,6 +296,20 @@ func (client fakeClient) AddPR(ctx context.Context, taskID string, prURL string)
 type recordingClient struct {
 	moveTaskID  string
 	moveStateID string
+}
+
+type recordingPublisher struct {
+	events []events.Event
+	err    error
+}
+
+func (publisher *recordingPublisher) Publish(ctx context.Context, event events.Event) error {
+	publisher.events = append(publisher.events, event)
+	if payload, ok := event.Payload.(events.TaskStatusChanged); ok && payload.OccurredAt.After(time.Now().Add(time.Minute)) {
+		return errors.New("unexpected future event")
+	}
+
+	return publisher.err
 }
 
 func (client *recordingClient) GetTasks(ctx context.Context, projectID string, stateIDs []string) ([]Task, error) {

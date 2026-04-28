@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"orchv3/internal/config"
+	"orchv3/internal/events"
 	"orchv3/internal/steplog"
 )
 
@@ -59,6 +60,7 @@ type Manager struct {
 	Config    config.LinearTaskManagerConfig
 	Client    Client
 	LogWriter io.Writer
+	Publisher events.Publisher
 }
 
 func New(cfg config.LinearTaskManagerConfig) *Manager {
@@ -106,6 +108,7 @@ func (manager *Manager) MoveTask(ctx context.Context, taskID string, stateID str
 	}
 
 	logger.Infof("taskmanager", "moved task=%s state=%s", taskID, stateID)
+	manager.publishTaskStatusChanged(ctx, logger, taskID, stateID)
 	return nil
 }
 
@@ -165,6 +168,27 @@ func (manager *Manager) client() Client {
 	client.LogWriter = writerOrDiscard(manager.LogWriter)
 	manager.Client = client
 	return manager.Client
+}
+
+func (manager *Manager) publishTaskStatusChanged(ctx context.Context, logger steplog.Logger, taskID string, stateID string) {
+	if manager.Publisher == nil {
+		return
+	}
+
+	occurredAt := time.Now().UTC()
+	payload := events.TaskStatusChanged{
+		TaskID:        taskID,
+		TargetStateID: stateID,
+		OccurredAt:    occurredAt,
+	}
+	event := events.Event{
+		Type:       events.TaskStatusChangedType,
+		OccurredAt: occurredAt,
+		Payload:    payload,
+	}
+	if err := manager.Publisher.Publish(ctx, event); err != nil {
+		logger.Errorf("taskmanager", "publish event=%s task=%s state=%s: %v", events.TaskStatusChangedType, taskID, stateID, err)
+	}
 }
 
 func validateRequiredField(field string, value string) error {

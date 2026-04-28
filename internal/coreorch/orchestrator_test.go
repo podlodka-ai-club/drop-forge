@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,7 +17,7 @@ import (
 	"orchv3/internal/taskmanager"
 )
 
-func TestRunProposalsOnceProcessesOnlyReadyTasksSequentially(t *testing.T) {
+func TestRunProposalsOnceProcessesOnlyReadyTasksConcurrently(t *testing.T) {
 	taskManager := &recordingTaskManager{
 		tasks: []taskmanager.Task{
 			readyTask("issue-1", "ENG-1", "First"),
@@ -29,9 +31,9 @@ func TestRunProposalsOnceProcessesOnlyReadyTasksSequentially(t *testing.T) {
 		},
 	}
 	runner := &recordingProposalRunner{
-		urls: []string{
-			"https://github.com/example/repo/pull/1",
-			"https://github.com/example/repo/pull/2",
+		urlByIdentifier: map[string]string{
+			"ENG-1": "https://github.com/example/repo/pull/1",
+			"ENG-3": "https://github.com/example/repo/pull/2",
 		},
 	}
 	var logs bytes.Buffer
@@ -44,27 +46,29 @@ func TestRunProposalsOnceProcessesOnlyReadyTasksSequentially(t *testing.T) {
 	if len(runner.inputs) != 2 {
 		t.Fatalf("runner inputs len = %d, want 2", len(runner.inputs))
 	}
-	if runner.inputs[0].Identifier != "ENG-1" || runner.inputs[0].Title != "First" {
-		t.Fatalf("runner inputs[0] = %#v", runner.inputs[0])
+	inputsByIdentifier := proposalInputsByIdentifier(runner.inputs)
+	if inputsByIdentifier["ENG-1"].Title != "First" {
+		t.Fatalf("ENG-1 input = %#v", inputsByIdentifier["ENG-1"])
 	}
-	if runner.inputs[1].Identifier != "ENG-3" || runner.inputs[1].Title != "Second" {
-		t.Fatalf("runner inputs[1] = %#v", runner.inputs[1])
+	if inputsByIdentifier["ENG-3"].Title != "Second" {
+		t.Fatalf("ENG-3 input = %#v", inputsByIdentifier["ENG-3"])
 	}
-	if !strings.Contains(runner.inputs[0].AgentPrompt, "Identifier: ENG-1") || !strings.Contains(runner.inputs[1].AgentPrompt, "Identifier: ENG-3") {
+	if !strings.Contains(inputsByIdentifier["ENG-1"].AgentPrompt, "Identifier: ENG-1") || !strings.Contains(inputsByIdentifier["ENG-3"].AgentPrompt, "Identifier: ENG-3") {
 		t.Fatalf("runner agent prompts = %#v", runner.inputs)
 	}
-	if got := strings.Join(taskManager.addPRTaskIDs, ","); got != "issue-1,issue-3" {
-		t.Fatalf("AddPR task order = %q", got)
+	if got := sortedStrings(taskManager.addPRTaskIDs); got != "issue-1,issue-3" {
+		t.Fatalf("AddPR tasks = %q", got)
 	}
-	if got := strings.Join(taskManager.moveTaskIDs, ","); got != "issue-1,issue-1,issue-3,issue-3" {
-		t.Fatalf("MoveTask order = %q", got)
-	}
-	if got := strings.Join(taskManager.moveStateIDs, ","); got != "state-proposing-progress,state-proposal-review,state-proposing-progress,state-proposal-review" {
-		t.Fatalf("MoveTask states = %q", got)
-	}
-	if got := strings.Join(taskManager.calls, ","); got != "move:issue-1:state-proposing-progress,add-pr:issue-1,move:issue-1:state-proposal-review,move:issue-3:state-proposing-progress,add-pr:issue-3,move:issue-3:state-proposal-review" {
-		t.Fatalf("mutation calls = %q", got)
-	}
+	assertTaskCalls(t, taskManager.calls, "issue-1", []string{
+		"move:issue-1:state-proposing-progress",
+		"add-pr:issue-1",
+		"move:issue-1:state-proposal-review",
+	})
+	assertTaskCalls(t, taskManager.calls, "issue-3", []string{
+		"move:issue-3:state-proposing-progress",
+		"add-pr:issue-3",
+		"move:issue-3:state-proposal-review",
+	})
 
 	events := decodeEvents(t, logs.String())
 	assertLogContains(t, events, "skip task=issue-2 identifier=ENG-2 state=state-archive")
@@ -97,7 +101,7 @@ func TestRunProposalsOnceWithNoReadyTasksDoesNotMutateTasks(t *testing.T) {
 	assertLogContains(t, events, "no ready-to-propose tasks found")
 }
 
-func TestRunProposalsOnceRoutesProposalAndApplyTasksSequentially(t *testing.T) {
+func TestRunProposalsOnceRoutesProposalAndApplyTasks(t *testing.T) {
 	taskManager := &recordingTaskManager{
 		tasks: []taskmanager.Task{
 			readyTask("issue-1", "ENG-1", "Proposal"),
@@ -121,12 +125,18 @@ func TestRunProposalsOnceRoutesProposalAndApplyTasksSequentially(t *testing.T) {
 	if applyRunner.inputs[0].PRURL != "https://github.com/example/repo/pull/2" || applyRunner.inputs[0].Identifier != "ENG-2" {
 		t.Fatalf("apply input = %#v", applyRunner.inputs[0])
 	}
-	if got := strings.Join(taskManager.calls, ","); got != "move:issue-1:state-proposing-progress,add-pr:issue-1,move:issue-1:state-proposal-review,move:issue-2:state-code-progress,move:issue-2:state-code-review" {
-		t.Fatalf("mutation calls = %q", got)
-	}
+	assertTaskCalls(t, taskManager.calls, "issue-1", []string{
+		"move:issue-1:state-proposing-progress",
+		"add-pr:issue-1",
+		"move:issue-1:state-proposal-review",
+	})
+	assertTaskCalls(t, taskManager.calls, "issue-2", []string{
+		"move:issue-2:state-code-progress",
+		"move:issue-2:state-code-review",
+	})
 }
 
-func TestRunProposalsOnceRoutesProposalApplyAndArchiveTasksSequentially(t *testing.T) {
+func TestRunProposalsOnceRoutesProposalApplyAndArchiveTasks(t *testing.T) {
 	taskManager := &recordingTaskManager{
 		tasks: []taskmanager.Task{
 			readyTask("issue-1", "ENG-1", "Proposal"),
@@ -155,8 +165,176 @@ func TestRunProposalsOnceRoutesProposalApplyAndArchiveTasksSequentially(t *testi
 	if archiveRunner.inputs[0].BranchName != "codex/proposal/archive" || archiveRunner.inputs[0].Identifier != "ENG-3" {
 		t.Fatalf("archive input = %#v", archiveRunner.inputs[0])
 	}
-	if got := strings.Join(taskManager.calls, ","); got != "move:issue-1:state-proposing-progress,add-pr:issue-1,move:issue-1:state-proposal-review,move:issue-2:state-code-progress,move:issue-2:state-code-review,move:issue-3:state-archiving-progress,move:issue-3:state-archive-review" {
-		t.Fatalf("mutation calls = %q", got)
+	assertTaskCalls(t, taskManager.calls, "issue-1", []string{
+		"move:issue-1:state-proposing-progress",
+		"add-pr:issue-1",
+		"move:issue-1:state-proposal-review",
+	})
+	assertTaskCalls(t, taskManager.calls, "issue-2", []string{
+		"move:issue-2:state-code-progress",
+		"move:issue-2:state-code-review",
+	})
+	assertTaskCalls(t, taskManager.calls, "issue-3", []string{
+		"move:issue-3:state-archiving-progress",
+		"move:issue-3:state-archive-review",
+	})
+}
+
+func TestRunProposalsOnceStartsDifferentRoutesConcurrently(t *testing.T) {
+	taskManager := &recordingTaskManager{
+		tasks: []taskmanager.Task{
+			readyTask("issue-1", "ENG-1", "Proposal"),
+			readyCodeTask("issue-2", "ENG-2", "Apply", taskmanager.PullRequest{Branch: "feature/apply"}),
+			readyArchiveTask("issue-3", "ENG-3", "Archive", taskmanager.PullRequest{Branch: "feature/archive"}),
+		},
+	}
+	tracker := newConcurrentStartTracker(3)
+	orch := testOrchestratorWithArchive(
+		taskManager,
+		&blockingProposalRunner{tracker: tracker, url: "https://github.com/example/repo/pull/1"},
+		&blockingApplyRunner{tracker: tracker},
+		&blockingArchiveRunner{tracker: tracker},
+		nil,
+	)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- orch.RunProposalsOnce(context.Background())
+	}()
+
+	waitForSignal(t, tracker.allStarted, "all runners to start")
+	close(tracker.release)
+	if err := waitForResult(t, done); err != nil {
+		t.Fatalf("RunProposalsOnce() returned error: %v", err)
+	}
+}
+
+func TestRunProposalsOnceStartsMultipleTasksFromSameRouteConcurrently(t *testing.T) {
+	taskManager := &recordingTaskManager{
+		tasks: []taskmanager.Task{
+			readyCodeTask("issue-1", "ENG-1", "Apply 1", taskmanager.PullRequest{Branch: "feature/one"}),
+			readyCodeTask("issue-2", "ENG-2", "Apply 2", taskmanager.PullRequest{Branch: "feature/two"}),
+		},
+	}
+	tracker := newConcurrentStartTracker(2)
+	orch := testOrchestratorWithApply(taskManager, &recordingProposalRunner{}, &blockingApplyRunner{tracker: tracker}, nil)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- orch.RunProposalsOnce(context.Background())
+	}()
+
+	waitForSignal(t, tracker.allStarted, "both apply runners to start")
+	close(tracker.release)
+	if err := waitForResult(t, done); err != nil {
+		t.Fatalf("RunProposalsOnce() returned error: %v", err)
+	}
+}
+
+func TestRunProposalsOnceWaitsForSlowTask(t *testing.T) {
+	taskManager := &recordingTaskManager{
+		tasks: []taskmanager.Task{
+			readyTask("issue-1", "ENG-1", "Proposal"),
+			readyCodeTask("issue-2", "ENG-2", "Apply", taskmanager.PullRequest{Branch: "feature/apply"}),
+		},
+	}
+	releaseSlow := make(chan struct{})
+	applyStarted := make(chan struct{})
+	orch := testOrchestratorWithApply(
+		taskManager,
+		&recordingProposalRunner{urls: []string{"https://github.com/example/repo/pull/1"}},
+		&slowApplyRunner{started: applyStarted, release: releaseSlow},
+		nil,
+	)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- orch.RunProposalsOnce(context.Background())
+	}()
+
+	waitForSignal(t, applyStarted, "slow apply runner to start")
+	select {
+	case err := <-done:
+		t.Fatalf("RunProposalsOnce() returned before slow task finished: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	close(releaseSlow)
+	if err := waitForResult(t, done); err != nil {
+		t.Fatalf("RunProposalsOnce() returned error: %v", err)
+	}
+}
+
+func TestRunProposalsOnceTaskFailureDoesNotCancelSiblingTask(t *testing.T) {
+	taskManager := &recordingTaskManager{
+		tasks: []taskmanager.Task{
+			readyCodeTask("issue-1", "ENG-1", "Apply", taskmanager.PullRequest{Branch: "feature/apply"}),
+			readyArchiveTask("issue-2", "ENG-2", "Archive", taskmanager.PullRequest{Branch: "feature/archive"}),
+		},
+	}
+	releaseArchive := make(chan struct{})
+	archiveStarted := make(chan struct{})
+	orch := testOrchestratorWithArchive(
+		taskManager,
+		&recordingProposalRunner{},
+		&recordingApplyRunner{err: errors.New("apply failed")},
+		&slowArchiveRunner{started: archiveStarted, release: releaseArchive},
+		nil,
+	)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- orch.RunProposalsOnce(context.Background())
+	}()
+
+	waitForSignal(t, archiveStarted, "archive runner to start")
+	select {
+	case err := <-done:
+		t.Fatalf("RunProposalsOnce() returned before sibling task finished: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	close(releaseArchive)
+	err := waitForResult(t, done)
+	if err == nil {
+		t.Fatal("RunProposalsOnce() error = nil, want apply failure")
+	}
+	if !strings.Contains(err.Error(), "process apply task=issue-1 identifier=ENG-1: run apply") {
+		t.Fatalf("error = %q, want apply context", err.Error())
+	}
+	assertTaskCalls(t, taskManager.calls, "issue-2", []string{
+		"move:issue-2:state-archiving-progress",
+		"move:issue-2:state-archive-review",
+	})
+}
+
+func TestRunProposalsOnceAggregatesMultipleTaskErrors(t *testing.T) {
+	taskManager := &recordingTaskManager{
+		tasks: []taskmanager.Task{
+			readyTask("issue-1", "ENG-1", "Proposal"),
+			readyCodeTask("issue-2", "ENG-2", "Apply", taskmanager.PullRequest{Branch: "feature/apply"}),
+		},
+	}
+	orch := testOrchestratorWithApply(
+		taskManager,
+		&recordingProposalRunner{err: errors.New("proposal failed")},
+		&recordingApplyRunner{err: errors.New("apply failed")},
+		nil,
+	)
+
+	err := orch.RunProposalsOnce(context.Background())
+	if err == nil {
+		t.Fatal("RunProposalsOnce() error = nil, want aggregated error")
+	}
+	for _, want := range []string{
+		"process proposal task=issue-1 identifier=ENG-1: run proposal",
+		"proposal failed",
+		"process apply task=issue-2 identifier=ENG-2: run apply",
+		"apply failed",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, want to contain %q", err.Error(), want)
+		}
 	}
 }
 
@@ -695,7 +873,159 @@ func TestRunProposalsOnceMoveTaskFailureReturnsPartialSuccessContext(t *testing.
 	}
 }
 
+func proposalInputsByIdentifier(inputs []proposalrunner.ProposalInput) map[string]proposalrunner.ProposalInput {
+	result := make(map[string]proposalrunner.ProposalInput, len(inputs))
+	for _, input := range inputs {
+		result[input.Identifier] = input
+	}
+
+	return result
+}
+
+func sortedStrings(values []string) string {
+	copied := append([]string(nil), values...)
+	sort.Strings(copied)
+	return strings.Join(copied, ",")
+}
+
+func assertTaskCalls(t *testing.T, calls []string, taskID string, want []string) {
+	t.Helper()
+
+	var got []string
+	for _, call := range calls {
+		if strings.Contains(call, ":"+taskID) {
+			got = append(got, call)
+		}
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("calls for %s = %q, want %q; all calls = %#v", taskID, strings.Join(got, ","), strings.Join(want, ","), calls)
+	}
+}
+
+type concurrentStartTracker struct {
+	mu         sync.Mutex
+	want       int
+	started    int
+	allStarted chan struct{}
+	release    chan struct{}
+}
+
+func newConcurrentStartTracker(want int) *concurrentStartTracker {
+	return &concurrentStartTracker{
+		want:       want,
+		allStarted: make(chan struct{}),
+		release:    make(chan struct{}),
+	}
+}
+
+func (tracker *concurrentStartTracker) markStarted() {
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
+	tracker.started++
+	if tracker.started == tracker.want {
+		close(tracker.allStarted)
+	}
+}
+
+type blockingProposalRunner struct {
+	tracker *concurrentStartTracker
+	url     string
+}
+
+func (runner *blockingProposalRunner) Run(ctx context.Context, input proposalrunner.ProposalInput) (string, error) {
+	runner.tracker.markStarted()
+	select {
+	case <-runner.tracker.release:
+		return runner.url, nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+type blockingApplyRunner struct {
+	tracker *concurrentStartTracker
+}
+
+func (runner *blockingApplyRunner) Run(ctx context.Context, input applyrunner.ApplyInput) error {
+	runner.tracker.markStarted()
+	select {
+	case <-runner.tracker.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+type blockingArchiveRunner struct {
+	tracker *concurrentStartTracker
+}
+
+func (runner *blockingArchiveRunner) Run(ctx context.Context, input archiverunner.ArchiveInput) error {
+	runner.tracker.markStarted()
+	select {
+	case <-runner.tracker.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+type slowApplyRunner struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (runner *slowApplyRunner) Run(ctx context.Context, input applyrunner.ApplyInput) error {
+	runner.once.Do(func() { close(runner.started) })
+	select {
+	case <-runner.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+type slowArchiveRunner struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (runner *slowArchiveRunner) Run(ctx context.Context, input archiverunner.ArchiveInput) error {
+	runner.once.Do(func() { close(runner.started) })
+	select {
+	case <-runner.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func waitForSignal(t *testing.T, signal <-chan struct{}, description string) {
+	t.Helper()
+
+	select {
+	case <-signal:
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for %s", description)
+	}
+}
+
+func waitForResult(t *testing.T, done <-chan error) error {
+	t.Helper()
+
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for RunProposalsOnce")
+		return nil
+	}
+}
+
 type recordingTaskManager struct {
+	mu               sync.Mutex
 	tasks            []taskmanager.Task
 	getTasksCalls    int
 	getTasksErr      error
@@ -710,11 +1040,15 @@ type recordingTaskManager struct {
 }
 
 func (manager *recordingTaskManager) GetTasks(ctx context.Context) ([]taskmanager.Task, error) {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
 	manager.getTasksCalls++
 	return manager.tasks, manager.getTasksErr
 }
 
 func (manager *recordingTaskManager) AddPR(ctx context.Context, taskID string, prURL string) error {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
 	manager.addPRTaskIDs = append(manager.addPRTaskIDs, taskID)
 	manager.addPRURLs = append(manager.addPRURLs, prURL)
 	manager.calls = append(manager.calls, "add-pr:"+taskID)
@@ -722,6 +1056,8 @@ func (manager *recordingTaskManager) AddPR(ctx context.Context, taskID string, p
 }
 
 func (manager *recordingTaskManager) MoveTask(ctx context.Context, taskID string, stateID string) error {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
 	manager.moveTaskIDs = append(manager.moveTaskIDs, taskID)
 	manager.moveStateIDs = append(manager.moveStateIDs, stateID)
 	manager.calls = append(manager.calls, "move:"+taskID+":"+stateID)
@@ -734,35 +1070,50 @@ func (manager *recordingTaskManager) MoveTask(ctx context.Context, taskID string
 }
 
 type recordingProposalRunner struct {
-	inputs []proposalrunner.ProposalInput
-	urls   []string
-	err    error
+	mu              sync.Mutex
+	inputs          []proposalrunner.ProposalInput
+	urls            []string
+	urlByIdentifier map[string]string
+	err             error
 }
 
 type recordingApplyRunner struct {
+	mu     sync.Mutex
 	inputs []applyrunner.ApplyInput
 	err    error
 }
 
 type recordingArchiveRunner struct {
+	mu     sync.Mutex
 	inputs []archiverunner.ArchiveInput
 	err    error
 }
 
 func (runner *recordingApplyRunner) Run(ctx context.Context, input applyrunner.ApplyInput) error {
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
 	runner.inputs = append(runner.inputs, input)
 	return runner.err
 }
 
 func (runner *recordingArchiveRunner) Run(ctx context.Context, input archiverunner.ArchiveInput) error {
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
 	runner.inputs = append(runner.inputs, input)
 	return runner.err
 }
 
 func (runner *recordingProposalRunner) Run(ctx context.Context, input proposalrunner.ProposalInput) (string, error) {
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
 	runner.inputs = append(runner.inputs, input)
 	if runner.err != nil {
 		return "", runner.err
+	}
+	if runner.urlByIdentifier != nil {
+		if url := runner.urlByIdentifier[input.Identifier]; url != "" {
+			return url, nil
+		}
 	}
 	if len(runner.urls) < len(runner.inputs) {
 		return "https://github.com/example/repo/pull/default", nil

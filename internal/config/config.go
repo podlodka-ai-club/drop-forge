@@ -37,7 +37,6 @@ type Config struct {
 	AppName              string
 	LogLevel             string
 	HTTPPort             int
-	OpenAIAPIKey         string
 	ProposalPollInterval time.Duration
 	ProposalRunner       ProposalRunnerConfig
 	TaskManager          LinearTaskManagerConfig
@@ -107,7 +106,6 @@ func Load() (Config, error) {
 		AppName:              trimmedStringFromEnv("APP_NAME", defaultAppName),
 		LogLevel:             trimmedStringFromEnv("LOG_LEVEL", defaultLogLevel),
 		HTTPPort:             httpPort,
-		OpenAIAPIKey:         os.Getenv("OPENAI_API_KEY"),
 		ProposalPollInterval: proposalPollInterval,
 		ProposalRunner: ProposalRunnerConfig{
 			RepositoryURL: trimmedStringFromEnv("PROPOSAL_REPOSITORY_URL", ""),

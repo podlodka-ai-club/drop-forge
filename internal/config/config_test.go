@@ -13,7 +13,6 @@ var envKeys = []string{
 	"APP_NAME",
 	"LOG_LEVEL",
 	"HTTP_PORT",
-	"OPENAI_API_KEY",
 	"PROPOSAL_REPOSITORY_URL",
 	"PROPOSAL_BASE_BRANCH",
 	"PROPOSAL_REMOTE_NAME",
@@ -152,7 +151,6 @@ func TestLoadReadsEnvironment(t *testing.T) {
 	t.Setenv("APP_NAME", "orch-test")
 	t.Setenv("LOG_LEVEL", "info")
 	t.Setenv("HTTP_PORT", "9090")
-	t.Setenv("OPENAI_API_KEY", "secret")
 	t.Setenv("PROPOSAL_REPOSITORY_URL", "git@github.com:example/project.git")
 	t.Setenv("PROPOSAL_BASE_BRANCH", "develop")
 	t.Setenv("PROPOSAL_REMOTE_NAME", "upstream")
@@ -197,9 +195,6 @@ func TestLoadReadsEnvironment(t *testing.T) {
 		t.Fatalf("HTTPPort = %d, want %d", cfg.HTTPPort, 9090)
 	}
 
-	if cfg.OpenAIAPIKey != "secret" {
-		t.Fatalf("OpenAIAPIKey = %q, want %q", cfg.OpenAIAPIKey, "secret")
-	}
 	if cfg.ProposalPollInterval != time.Minute {
 		t.Fatalf("ProposalPollInterval = %v, want %v", cfg.ProposalPollInterval, time.Minute)
 	}

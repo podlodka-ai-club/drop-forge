@@ -14,22 +14,22 @@ import (
 
 const (
 	defaultAppEnv   = "development"
-	defaultAppName  = "orchv3"
+	defaultAppName  = "Drop Forge"
 	defaultLogLevel = "debug"
 	defaultHTTPPort = 8080
 
-	defaultProposalBaseBranch    = "main"
-	defaultProposalRemoteName    = "origin"
+	defaultDropForgeBaseBranch   = "main"
+	defaultDropForgeRemoteName   = "origin"
 	defaultProposalBranchPrefix  = "codex/proposal"
 	defaultProposalPRTitlePrefix = "OpenSpec proposal:"
-	defaultProposalGitPath       = "git"
-	defaultProposalCodexPath     = "codex"
-	defaultProposalGHPath        = "gh"
+	defaultDropForgeGitPath      = "git"
+	defaultDropForgeCodexPath    = "codex"
+	defaultDropForgeGHPath       = "gh"
 
-	defaultLinearAPIURL         = "https://api.linear.app/graphql"
-	defaultLogstashBufferSize   = 1024
-	defaultLogstashDialTimeout  = 2 * time.Second
-	defaultProposalPollInterval = 30 * time.Second
+	defaultLinearAPIURL          = "https://api.linear.app/graphql"
+	defaultLogstashBufferSize    = 1024
+	defaultLogstashDialTimeout   = 2 * time.Second
+	defaultDropForgePollInterval = 30 * time.Second
 )
 
 type Config struct {
@@ -81,13 +81,16 @@ func Load() (Config, error) {
 	if err := loadDotEnv(); err != nil {
 		return Config{}, err
 	}
+	if err := rejectLegacySharedProposalEnv(); err != nil {
+		return Config{}, err
+	}
 
 	httpPort, err := intFromEnv("HTTP_PORT", defaultHTTPPort)
 	if err != nil {
 		return Config{}, err
 	}
 
-	cleanupTemp, err := boolFromEnv("PROPOSAL_CLEANUP_TEMP", false)
+	cleanupTemp, err := boolFromEnv("DROP_FORGE_CLEANUP_TEMP", false)
 	if err != nil {
 		return Config{}, err
 	}
@@ -97,7 +100,7 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 
-	proposalPollInterval, err := positiveDurationFromEnv("PROPOSAL_POLL_INTERVAL", defaultProposalPollInterval)
+	proposalPollInterval, err := positiveDurationFromEnv("DROP_FORGE_POLL_INTERVAL", defaultDropForgePollInterval)
 	if err != nil {
 		return Config{}, err
 	}
@@ -110,15 +113,15 @@ func Load() (Config, error) {
 		OpenAIAPIKey:         os.Getenv("OPENAI_API_KEY"),
 		ProposalPollInterval: proposalPollInterval,
 		ProposalRunner: ProposalRunnerConfig{
-			RepositoryURL: trimmedStringFromEnv("PROPOSAL_REPOSITORY_URL", ""),
-			BaseBranch:    trimmedStringFromEnv("PROPOSAL_BASE_BRANCH", defaultProposalBaseBranch),
-			RemoteName:    trimmedStringFromEnv("PROPOSAL_REMOTE_NAME", defaultProposalRemoteName),
+			RepositoryURL: trimmedStringFromEnv("DROP_FORGE_REPOSITORY_URL", ""),
+			BaseBranch:    trimmedStringFromEnv("DROP_FORGE_BASE_BRANCH", defaultDropForgeBaseBranch),
+			RemoteName:    trimmedStringFromEnv("DROP_FORGE_REMOTE_NAME", defaultDropForgeRemoteName),
 			BranchPrefix:  trimmedStringFromEnv("PROPOSAL_BRANCH_PREFIX", defaultProposalBranchPrefix),
 			PRTitlePrefix: trimmedStringFromEnv("PROPOSAL_PR_TITLE_PREFIX", defaultProposalPRTitlePrefix),
 			CleanupTemp:   cleanupTemp,
-			GitPath:       trimmedStringFromEnv("PROPOSAL_GIT_PATH", defaultProposalGitPath),
-			CodexPath:     trimmedStringFromEnv("PROPOSAL_CODEX_PATH", defaultProposalCodexPath),
-			GHPath:        trimmedStringFromEnv("PROPOSAL_GH_PATH", defaultProposalGHPath),
+			GitPath:       trimmedStringFromEnv("DROP_FORGE_GIT_PATH", defaultDropForgeGitPath),
+			CodexPath:     trimmedStringFromEnv("DROP_FORGE_CODEX_PATH", defaultDropForgeCodexPath),
+			GHPath:        trimmedStringFromEnv("DROP_FORGE_GH_PATH", defaultDropForgeGHPath),
 		},
 		TaskManager: LinearTaskManagerConfig{
 			APIURL:                     trimmedStringFromEnv("LINEAR_API_URL", defaultLinearAPIURL),
@@ -187,22 +190,43 @@ func positiveDurationFromEnv(key string, fallback time.Duration) (time.Duration,
 
 func (cfg ProposalRunnerConfig) Validate() error {
 	if strings.TrimSpace(cfg.RepositoryURL) == "" {
-		return errors.New("proposal runner repository URL is required: set PROPOSAL_REPOSITORY_URL")
+		return errors.New("proposal runner repository URL is required: set DROP_FORGE_REPOSITORY_URL")
 	}
 
 	requiredValues := map[string]string{
-		"PROPOSAL_BASE_BRANCH":     cfg.BaseBranch,
-		"PROPOSAL_REMOTE_NAME":     cfg.RemoteName,
+		"DROP_FORGE_BASE_BRANCH":   cfg.BaseBranch,
+		"DROP_FORGE_REMOTE_NAME":   cfg.RemoteName,
 		"PROPOSAL_BRANCH_PREFIX":   cfg.BranchPrefix,
 		"PROPOSAL_PR_TITLE_PREFIX": cfg.PRTitlePrefix,
-		"PROPOSAL_GIT_PATH":        cfg.GitPath,
-		"PROPOSAL_CODEX_PATH":      cfg.CodexPath,
-		"PROPOSAL_GH_PATH":         cfg.GHPath,
+		"DROP_FORGE_GIT_PATH":      cfg.GitPath,
+		"DROP_FORGE_CODEX_PATH":    cfg.CodexPath,
+		"DROP_FORGE_GH_PATH":       cfg.GHPath,
 	}
 
 	for key, value := range requiredValues {
 		if strings.TrimSpace(value) == "" {
 			return fmt.Errorf("%s must not be empty", key)
+		}
+	}
+
+	return nil
+}
+
+func rejectLegacySharedProposalEnv() error {
+	replacements := map[string]string{
+		"PROPOSAL_REPOSITORY_URL": "DROP_FORGE_REPOSITORY_URL",
+		"PROPOSAL_BASE_BRANCH":    "DROP_FORGE_BASE_BRANCH",
+		"PROPOSAL_REMOTE_NAME":    "DROP_FORGE_REMOTE_NAME",
+		"PROPOSAL_CLEANUP_TEMP":   "DROP_FORGE_CLEANUP_TEMP",
+		"PROPOSAL_POLL_INTERVAL":  "DROP_FORGE_POLL_INTERVAL",
+		"PROPOSAL_GIT_PATH":       "DROP_FORGE_GIT_PATH",
+		"PROPOSAL_CODEX_PATH":     "DROP_FORGE_CODEX_PATH",
+		"PROPOSAL_GH_PATH":        "DROP_FORGE_GH_PATH",
+	}
+
+	for legacyKey, newKey := range replacements {
+		if _, ok := os.LookupEnv(legacyKey); ok {
+			return fmt.Errorf("%s is no longer supported; use %s", legacyKey, newKey)
 		}
 	}
 

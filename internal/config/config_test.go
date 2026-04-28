@@ -14,11 +14,19 @@ var envKeys = []string{
 	"LOG_LEVEL",
 	"HTTP_PORT",
 	"OPENAI_API_KEY",
+	"DROP_FORGE_REPOSITORY_URL",
+	"DROP_FORGE_BASE_BRANCH",
+	"DROP_FORGE_REMOTE_NAME",
+	"PROPOSAL_BRANCH_PREFIX",
+	"PROPOSAL_PR_TITLE_PREFIX",
+	"DROP_FORGE_CLEANUP_TEMP",
+	"DROP_FORGE_POLL_INTERVAL",
+	"DROP_FORGE_GIT_PATH",
+	"DROP_FORGE_CODEX_PATH",
+	"DROP_FORGE_GH_PATH",
 	"PROPOSAL_REPOSITORY_URL",
 	"PROPOSAL_BASE_BRANCH",
 	"PROPOSAL_REMOTE_NAME",
-	"PROPOSAL_BRANCH_PREFIX",
-	"PROPOSAL_PR_TITLE_PREFIX",
 	"PROPOSAL_CLEANUP_TEMP",
 	"PROPOSAL_POLL_INTERVAL",
 	"PROPOSAL_GIT_PATH",
@@ -65,23 +73,23 @@ func TestLoadUsesDefaults(t *testing.T) {
 		t.Fatalf("HTTPPort = %d, want %d", cfg.HTTPPort, defaultHTTPPort)
 	}
 
-	if cfg.ProposalRunner.BaseBranch != defaultProposalBaseBranch {
-		t.Fatalf("ProposalRunner.BaseBranch = %q, want %q", cfg.ProposalRunner.BaseBranch, defaultProposalBaseBranch)
+	if cfg.ProposalRunner.BaseBranch != defaultDropForgeBaseBranch {
+		t.Fatalf("ProposalRunner.BaseBranch = %q, want %q", cfg.ProposalRunner.BaseBranch, defaultDropForgeBaseBranch)
 	}
 
 	if cfg.ProposalRunner.CleanupTemp {
 		t.Fatal("ProposalRunner.CleanupTemp = true, want false")
 	}
 
-	if cfg.ProposalRunner.GitPath != defaultProposalGitPath {
-		t.Fatalf("ProposalRunner.GitPath = %q, want %q", cfg.ProposalRunner.GitPath, defaultProposalGitPath)
+	if cfg.ProposalRunner.GitPath != defaultDropForgeGitPath {
+		t.Fatalf("ProposalRunner.GitPath = %q, want %q", cfg.ProposalRunner.GitPath, defaultDropForgeGitPath)
 	}
 
 	if cfg.TaskManager.APIURL != defaultLinearAPIURL {
 		t.Fatalf("TaskManager.APIURL = %q, want %q", cfg.TaskManager.APIURL, defaultLinearAPIURL)
 	}
-	if cfg.ProposalPollInterval != defaultProposalPollInterval {
-		t.Fatalf("ProposalPollInterval = %v, want %v", cfg.ProposalPollInterval, defaultProposalPollInterval)
+	if cfg.ProposalPollInterval != defaultDropForgePollInterval {
+		t.Fatalf("ProposalPollInterval = %v, want %v", cfg.ProposalPollInterval, defaultDropForgePollInterval)
 	}
 	if cfg.Logstash.Addr != "" {
 		t.Fatalf("Logstash.Addr = %q, want empty by default", cfg.Logstash.Addr)
@@ -153,16 +161,16 @@ func TestLoadReadsEnvironment(t *testing.T) {
 	t.Setenv("LOG_LEVEL", "info")
 	t.Setenv("HTTP_PORT", "9090")
 	t.Setenv("OPENAI_API_KEY", "secret")
-	t.Setenv("PROPOSAL_REPOSITORY_URL", "git@github.com:example/project.git")
-	t.Setenv("PROPOSAL_BASE_BRANCH", "develop")
-	t.Setenv("PROPOSAL_REMOTE_NAME", "upstream")
+	t.Setenv("DROP_FORGE_REPOSITORY_URL", "git@github.com:example/project.git")
+	t.Setenv("DROP_FORGE_BASE_BRANCH", "develop")
+	t.Setenv("DROP_FORGE_REMOTE_NAME", "upstream")
 	t.Setenv("PROPOSAL_BRANCH_PREFIX", "automation/proposal")
 	t.Setenv("PROPOSAL_PR_TITLE_PREFIX", "Spec:")
-	t.Setenv("PROPOSAL_CLEANUP_TEMP", "true")
-	t.Setenv("PROPOSAL_POLL_INTERVAL", "1m")
-	t.Setenv("PROPOSAL_GIT_PATH", "/usr/local/bin/git")
-	t.Setenv("PROPOSAL_CODEX_PATH", "/usr/local/bin/codex")
-	t.Setenv("PROPOSAL_GH_PATH", "/usr/local/bin/gh")
+	t.Setenv("DROP_FORGE_CLEANUP_TEMP", "true")
+	t.Setenv("DROP_FORGE_POLL_INTERVAL", "1m")
+	t.Setenv("DROP_FORGE_GIT_PATH", "/usr/local/bin/git")
+	t.Setenv("DROP_FORGE_CODEX_PATH", "/usr/local/bin/codex")
+	t.Setenv("DROP_FORGE_GH_PATH", "/usr/local/bin/gh")
 	t.Setenv("LINEAR_API_URL", "https://linear.example/graphql")
 	t.Setenv("LINEAR_API_TOKEN", "linear-token")
 	t.Setenv("LINEAR_PROJECT_ID", "project-123")
@@ -284,7 +292,7 @@ func TestLoadReturnsErrorForInvalidHTTPPort(t *testing.T) {
 
 func TestLoadReturnsErrorForInvalidCleanupFlag(t *testing.T) {
 	isolateEnv(t)
-	t.Setenv("PROPOSAL_CLEANUP_TEMP", "sometimes")
+	t.Setenv("DROP_FORGE_CLEANUP_TEMP", "sometimes")
 
 	_, err := Load()
 	if err == nil {
@@ -294,7 +302,7 @@ func TestLoadReturnsErrorForInvalidCleanupFlag(t *testing.T) {
 
 func TestLoadReturnsErrorForInvalidProposalPollInterval(t *testing.T) {
 	isolateEnv(t)
-	t.Setenv("PROPOSAL_POLL_INTERVAL", "not-a-duration")
+	t.Setenv("DROP_FORGE_POLL_INTERVAL", "not-a-duration")
 
 	_, err := Load()
 	if err == nil {
@@ -304,7 +312,7 @@ func TestLoadReturnsErrorForInvalidProposalPollInterval(t *testing.T) {
 
 func TestLoadReturnsErrorForNonPositiveProposalPollInterval(t *testing.T) {
 	isolateEnv(t)
-	t.Setenv("PROPOSAL_POLL_INTERVAL", "0")
+	t.Setenv("DROP_FORGE_POLL_INTERVAL", "0")
 
 	_, err := Load()
 	if err == nil {
@@ -312,13 +320,42 @@ func TestLoadReturnsErrorForNonPositiveProposalPollInterval(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsLegacySharedProposalKeys(t *testing.T) {
+	tests := []struct {
+		legacy string
+		value  string
+		want   string
+	}{
+		{legacy: "PROPOSAL_REPOSITORY_URL", value: "git@github.com:example/legacy.git", want: "DROP_FORGE_REPOSITORY_URL"},
+		{legacy: "PROPOSAL_POLL_INTERVAL", value: "1m", want: "DROP_FORGE_POLL_INTERVAL"},
+		{legacy: "PROPOSAL_GIT_PATH", value: "/usr/bin/git", want: "DROP_FORGE_GIT_PATH"},
+		{legacy: "PROPOSAL_CODEX_PATH", value: "/usr/bin/codex", want: "DROP_FORGE_CODEX_PATH"},
+		{legacy: "PROPOSAL_GH_PATH", value: "/usr/bin/gh", want: "DROP_FORGE_GH_PATH"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.legacy, func(t *testing.T) {
+			isolateEnv(t)
+			t.Setenv(tt.legacy, tt.value)
+
+			_, err := Load()
+			if err == nil {
+				t.Fatal("Load() error = nil, want non-nil")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Load() error = %q, want replacement %q", err.Error(), tt.want)
+			}
+		})
+	}
+}
+
 func TestLoadReadsDotEnvWithGodotenvSyntax(t *testing.T) {
 	isolateEnv(t)
 	writeDotEnv(t, `
 APP_NAME="orch app" # inline comment
-PROPOSAL_REPOSITORY_URL='git@github.com:example/from-dotenv.git'
-PROPOSAL_BASE_BRANCH=feature/base
-PROPOSAL_CLEANUP_TEMP=true
+DROP_FORGE_REPOSITORY_URL='git@github.com:example/from-dotenv.git'
+DROP_FORGE_BASE_BRANCH=feature/base
+DROP_FORGE_CLEANUP_TEMP=true
 LINEAR_PROJECT_ID='project-from-dotenv'
 LINEAR_STATE_READY_TO_PROPOSE_ID="state-propose"
 LINEAR_STATE_READY_TO_CODE_ID='state-code'
@@ -401,11 +438,11 @@ LINEAR_STATE_READY_TO_CODE_ID=state-code-from-parent
 func TestLoadProcessEnvironmentOverridesDotEnv(t *testing.T) {
 	isolateEnv(t)
 	writeDotEnv(t, `
-PROPOSAL_REPOSITORY_URL=git@github.com:example/from-dotenv.git
-PROPOSAL_BASE_BRANCH=main
+DROP_FORGE_REPOSITORY_URL=git@github.com:example/from-dotenv.git
+DROP_FORGE_BASE_BRANCH=main
 LINEAR_PROJECT_ID=project-from-dotenv
 `)
-	t.Setenv("PROPOSAL_REPOSITORY_URL", "git@github.com:example/from-process.git")
+	t.Setenv("DROP_FORGE_REPOSITORY_URL", "git@github.com:example/from-process.git")
 	t.Setenv("LINEAR_PROJECT_ID", "project-from-process")
 
 	cfg, err := Load()
@@ -451,14 +488,14 @@ func TestProposalRunnerConfigValidate(t *testing.T) {
 			mutate: func(cfg *ProposalRunnerConfig) {
 				cfg.RepositoryURL = " "
 			},
-			wantErr: "PROPOSAL_REPOSITORY_URL",
+			wantErr: "DROP_FORGE_REPOSITORY_URL",
 		},
 		{
 			name: "missing git path",
 			mutate: func(cfg *ProposalRunnerConfig) {
 				cfg.GitPath = " "
 			},
-			wantErr: "PROPOSAL_GIT_PATH",
+			wantErr: "DROP_FORGE_GIT_PATH",
 		},
 	}
 

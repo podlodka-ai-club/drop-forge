@@ -152,14 +152,14 @@ func (runner *Runner) resolveBranch(ctx context.Context, git GitManager, cloneDi
 
 func validateConfig(cfg config.ProposalRunnerConfig) error {
 	if strings.TrimSpace(cfg.RepositoryURL) == "" {
-		return errors.New("PROPOSAL_REPOSITORY_URL must not be empty")
+		return errors.New("DROP_FORGE_REPOSITORY_URL must not be empty")
 	}
 
 	requiredValues := map[string]string{
-		"PROPOSAL_REMOTE_NAME": cfg.RemoteName,
-		"PROPOSAL_GIT_PATH":    cfg.GitPath,
-		"PROPOSAL_CODEX_PATH":  cfg.CodexPath,
-		"PROPOSAL_GH_PATH":     cfg.GHPath,
+		"DROP_FORGE_REMOTE_NAME": cfg.RemoteName,
+		"DROP_FORGE_GIT_PATH":    cfg.GitPath,
+		"DROP_FORGE_CODEX_PATH":  cfg.CodexPath,
+		"DROP_FORGE_GH_PATH":     cfg.GHPath,
 	}
 	for key, value := range requiredValues {
 		if strings.TrimSpace(value) == "" {

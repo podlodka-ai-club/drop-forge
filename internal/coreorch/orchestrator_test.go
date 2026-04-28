@@ -537,9 +537,9 @@ func TestRunProposalsLoopRepeatsAfterSuccessAndWaitsInterval(t *testing.T) {
 	}
 
 	events := decodeEvents(t, logs.String())
-	assertLogContains(t, events, "orchestration monitor iteration start iteration=1")
-	assertLogContains(t, events, "orchestration monitor iteration start iteration=2")
-	assertLogContains(t, events, "proposal monitor stopped: context canceled")
+	assertLogContains(t, events, "Drop Forge orchestration monitor iteration start iteration=1")
+	assertLogContains(t, events, "Drop Forge orchestration monitor iteration start iteration=2")
+	assertLogContains(t, events, "Drop Forge orchestration monitor stopped: context canceled")
 }
 
 func TestRunProposalsLoopContinuesAfterIterationError(t *testing.T) {
@@ -562,8 +562,8 @@ func TestRunProposalsLoopContinuesAfterIterationError(t *testing.T) {
 	}
 
 	events := decodeEvents(t, logs.String())
-	assertLogContains(t, events, "orchestration monitor iteration error iteration=1")
-	assertLogContains(t, events, "orchestration monitor iteration start iteration=2")
+	assertLogContains(t, events, "Drop Forge orchestration monitor iteration error iteration=1")
+	assertLogContains(t, events, "Drop Forge orchestration monitor iteration start iteration=2")
 }
 
 func TestRunProposalsLoopStopsBeforeNextPassWhenContextCancelledDuringWait(t *testing.T) {
@@ -594,7 +594,7 @@ func TestRunProposalsLoopRequiresPositiveInterval(t *testing.T) {
 	if err == nil {
 		t.Fatal("runProposalsLoop() error = nil, want non-nil")
 	}
-	if !strings.Contains(err.Error(), "proposal poll interval") {
+	if !strings.Contains(err.Error(), "Drop Forge poll interval") {
 		t.Fatalf("error = %q, want poll interval context", err.Error())
 	}
 }

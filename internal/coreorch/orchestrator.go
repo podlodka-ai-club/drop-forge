@@ -142,10 +142,10 @@ func (orch *Orchestrator) RunProposalsLoop(ctx context.Context, interval time.Du
 
 func (orch *Orchestrator) runProposalsLoop(ctx context.Context, interval time.Duration, wait WaitFunc) error {
 	if interval <= 0 {
-		return fmt.Errorf("proposal poll interval must be positive, got %s", interval)
+		return fmt.Errorf("Drop Forge poll interval must be positive, got %s", interval)
 	}
 	if wait == nil {
-		return fmt.Errorf("proposal poll wait func must not be nil")
+		return fmt.Errorf("Drop Forge poll wait func must not be nil")
 	}
 	if err := orch.validate(); err != nil {
 		return err
@@ -154,18 +154,18 @@ func (orch *Orchestrator) runProposalsLoop(ctx context.Context, interval time.Du
 	logger := steplog.NewWithService(writerOrDiscard(orch.LogWriter), orch.Service)
 	for iteration := 1; ; iteration++ {
 		if err := ctx.Err(); err != nil {
-			logger.Infof(module, "proposal monitor stopped: %v", err)
+			logger.Infof(module, "Drop Forge orchestration monitor stopped: %v", err)
 			return nil
 		}
 
-		logger.Infof(module, "orchestration monitor iteration start iteration=%d", iteration)
+		logger.Infof(module, "Drop Forge orchestration monitor iteration start iteration=%d", iteration)
 		if err := orch.RunProposalsOnce(ctx); err != nil {
-			logger.Errorf(module, "orchestration monitor iteration error iteration=%d: %v", iteration, err)
+			logger.Errorf(module, "Drop Forge orchestration monitor iteration error iteration=%d: %v", iteration, err)
 		}
 
 		if err := wait(ctx, interval); err != nil {
 			if ctx.Err() != nil {
-				logger.Infof(module, "proposal monitor stopped: %v", ctx.Err())
+				logger.Infof(module, "Drop Forge orchestration monitor stopped: %v", ctx.Err())
 				return nil
 			}
 			return fmt.Errorf("wait orchestration poll interval: %w", err)

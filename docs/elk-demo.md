@@ -44,7 +44,7 @@ docker compose -f deploy/docker-compose.yml down -v
 ## Smoke-test (без оркестратора)
 
 ```
-echo '{"time":"2026-04-24T10:00:00Z","service":"orchv3","module":"smoke","type":"info","message":"hello"}' \
+echo '{"time":"2026-04-24T10:00:00Z","service":"Drop Forge","module":"smoke","type":"info","message":"hello"}' \
   | nc 127.0.0.1 5000
 ```
 
@@ -64,7 +64,7 @@ LOGSTASH_ADDR=127.0.0.1:5000
 
 ## Экспорт дашборда после ручной настройки
 
-1. В Kibana создать дашборд «orchv3 live» (timeline, modules × levels, recent errors).
+1. В Kibana создать дашборд «Drop Forge live» (timeline, modules × levels, recent errors).
 2. Management → Stack Management → Saved Objects → Export (Data views + Dashboards).
 3. Полученный `.ndjson` сохранить как `deploy/kibana/saved-objects.ndjson` (заменить).
 4. `docker compose -f deploy/docker-compose.yml up -d --force-recreate kibana-setup` — идемпотентный reimport.

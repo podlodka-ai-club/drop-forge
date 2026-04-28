@@ -200,7 +200,7 @@ func TestRunnerReturnsConfigValidationBeforeSideEffects(t *testing.T) {
 	}
 
 	err := runner.Run(context.Background(), ApplyInput{Title: "Task", AgentPrompt: "Context", BranchName: "branch"})
-	if err == nil || !strings.Contains(err.Error(), "PROPOSAL_REPOSITORY_URL") {
+	if err == nil || !strings.Contains(err.Error(), "DROP_FORGE_REPOSITORY_URL") {
 		t.Fatalf("Run() error = %v, want repository context", err)
 	}
 	if mkdirCalled || len(fake.commands) != 0 {

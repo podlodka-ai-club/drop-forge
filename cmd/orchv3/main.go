@@ -82,14 +82,14 @@ func runWithDeps(args []string, stdin *os.File, stdout io.Writer, stderr io.Writ
 	orchestrator := deps.newProposalOrchestrator(cfg, taskManager, proposalRunner, applyRunner, archiveRunner, logOut)
 	logger.Infof(
 		"cli",
-		"%s starting orchestration monitor in %s on port %d interval=%s",
+		"%s starting Drop Forge orchestration monitor in %s on port %d interval=%s",
 		cfg.AppName,
 		cfg.AppEnv,
 		cfg.HTTPPort,
 		cfg.ProposalPollInterval,
 	)
 	if err := orchestrator.RunProposalsLoop(context.Background(), cfg.ProposalPollInterval); err != nil {
-		logger.Errorf("cli", "run orchestration monitor: %v", err)
+		logger.Errorf("cli", "run Drop Forge orchestration monitor: %v", err)
 		return 1
 	}
 
@@ -98,7 +98,7 @@ func runWithDeps(args []string, stdin *os.File, stdout io.Writer, stderr io.Writ
 
 func rejectManualProposalInput(args []string, stdin *os.File) error {
 	if len(args) > 0 {
-		return fmt.Errorf("usage error: manual proposal execution was removed; run without arguments to start the proposal monitor")
+		return fmt.Errorf("usage error: manual proposal execution is unsupported in Drop Forge; run without arguments to start Drop Forge orchestration")
 	}
 
 	stat, err := stdin.Stat()
@@ -115,7 +115,7 @@ func rejectManualProposalInput(args []string, stdin *os.File) error {
 		return fmt.Errorf("read stdin: %w", err)
 	}
 	if strings.TrimSpace(string(content)) != "" {
-		return fmt.Errorf("usage error: manual proposal execution was removed; run without stdin input to start the proposal monitor")
+		return fmt.Errorf("usage error: manual proposal execution is unsupported in Drop Forge; run without stdin input to start Drop Forge orchestration")
 	}
 
 	return nil

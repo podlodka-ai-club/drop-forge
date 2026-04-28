@@ -24,7 +24,7 @@ func TestRejectManualProposalInputFromArgs(t *testing.T) {
 	if err == nil {
 		t.Fatal("rejectManualProposalInput() error = nil, want non-nil")
 	}
-	if !strings.Contains(err.Error(), "manual proposal execution was removed") {
+	if !strings.Contains(err.Error(), "manual proposal execution is unsupported in Drop Forge") {
 		t.Fatalf("error = %q, want manual proposal removal context", err.Error())
 	}
 }
@@ -49,7 +49,7 @@ func TestRejectManualProposalInputFromPipe(t *testing.T) {
 	if err == nil {
 		t.Fatal("rejectManualProposalInput() error = nil, want non-nil")
 	}
-	if !strings.Contains(err.Error(), "manual proposal execution was removed") {
+	if !strings.Contains(err.Error(), "manual proposal execution is unsupported in Drop Forge") {
 		t.Fatalf("error = %q, want manual proposal removal context", err.Error())
 	}
 }
@@ -81,7 +81,7 @@ func TestRunWithoutTaskStartsProposalMonitor(t *testing.T) {
 	if event.Type != "info" {
 		t.Fatalf("type = %q, want %q", event.Type, "info")
 	}
-	if !strings.Contains(event.Message, "orchv3-test starting orchestration monitor") {
+	if !strings.Contains(event.Message, "orchv3-test starting Drop Forge orchestration monitor") {
 		t.Fatalf("message = %q, want startup message", event.Message)
 	}
 	if monitor.calls != 1 {
@@ -285,7 +285,7 @@ func TestRunArgsRejectsManualProposalModeWithoutCallingRunner(t *testing.T) {
 	}
 
 	event := decodeLogEvent(t, stderr.String())
-	if !strings.Contains(event.Message, "manual proposal execution was removed") {
+	if !strings.Contains(event.Message, "manual proposal execution is unsupported in Drop Forge") {
 		t.Fatalf("message = %q, want removal usage error", event.Message)
 	}
 }
@@ -325,7 +325,7 @@ func TestRunStdinRejectsManualProposalModeWithoutCallingRunner(t *testing.T) {
 	}
 
 	event := decodeLogEvent(t, stderr.String())
-	if !strings.Contains(event.Message, "manual proposal execution was removed") {
+	if !strings.Contains(event.Message, "manual proposal execution is unsupported in Drop Forge") {
 		t.Fatalf("message = %q, want removal usage error", event.Message)
 	}
 }

@@ -1,6 +1,6 @@
-# orchv3
+# Drop Forge
 
-`orchv3` — Go CLI для proposal/apply/archive оркестрации. Утилита запускает постоянный мониторинг Linear-задач, создает OpenSpec proposal PR для задач, готовых к proposal, применяет принятые OpenSpec changes для задач, готовых к code, и архивирует завершенные changes для задач, готовых к archive.
+Drop Forge — Go CLI для proposal/apply/archive оркестрации. Утилита запускает постоянный мониторинг Linear-задач, создает OpenSpec proposal PR для задач, готовых к proposal, применяет принятые OpenSpec changes для задач, готовых к code, и архивирует завершенные changes для задач, готовых к archive.
 
 Детали proposal runner workflow и prerequisites вынесены в [docs/proposal-runner.md](docs/proposal-runner.md). Детали Linear-facing слоя описаны в [docs/linear-task-manager.md](docs/linear-task-manager.md).
 
@@ -15,7 +15,7 @@
 
 Ручной запуск proposal по описанию задачи из args/stdin удален. Любые CLI-аргументы или непустой `stdin` возвращают usage error.
 
-## Proposal Orchestration
+## Drop Forge Orchestration
 
 Default runtime связывает `CoreOrch`, `TaskManager`, `proposalrunner`, `applyrunner` и `archiverunner` в долгоживущий polling loop:
 
@@ -28,7 +28,7 @@ Default runtime связывает `CoreOrch`, `TaskManager`, `proposalrunner`, 
 - после успеха `CoreOrch` вызывает `TaskManager.AddPR(...)`, затем `TaskManager.MoveTask(...)` в `LINEAR_STATE_NEED_PROPOSAL_REVIEW_ID`.
 - после успешного Apply `CoreOrch` переводит задачу из `LINEAR_STATE_CODE_IN_PROGRESS_ID` в `LINEAR_STATE_NEED_CODE_REVIEW_ID`.
 - после успешного Archive `CoreOrch` переводит задачу из `LINEAR_STATE_ARCHIVING_IN_PROGRESS_ID` в `LINEAR_STATE_NEED_ARCHIVE_REVIEW_ID`.
-- после каждого прохода monitor ждет `PROPOSAL_POLL_INTERVAL` и запускает следующий проход до остановки процесса.
+- после каждого прохода monitor ждет `DROP_FORGE_POLL_INTERVAL` и запускает следующий проход до остановки процесса.
 
 Если отдельный orchestration pass падает, monitor пишет structured error и продолжает следующий проход после polling interval. Если runner падает или Linear не смог прикрепить PR, задача не переводится в review state. Если PR уже прикреплен, но move task упал, ошибка логируется с контекстом задачи и PR URL.
 
@@ -56,16 +56,19 @@ Go-модуль и зависимости зафиксированы в [go.mod]
 
 Практически важные переменные:
 
-- `PROPOSAL_REPOSITORY_URL` — обязательный URL целевого репозитория;
-- `PROPOSAL_BASE_BRANCH`, `PROPOSAL_REMOTE_NAME`, `PROPOSAL_BRANCH_PREFIX`, `PROPOSAL_PR_TITLE_PREFIX` — параметры git/GitHub workflow;
-- `PROPOSAL_GIT_PATH`, `PROPOSAL_CODEX_PATH`, `PROPOSAL_GH_PATH` — пути к внешним CLI; `PROPOSAL_CODEX_PATH` относится к текущей Codex-реализации `AgentExecutor`;
-- `PROPOSAL_CLEANUP_TEMP` — удалять ли временную директорию после выполнения;
-- `PROPOSAL_POLL_INTERVAL` — интервал между проходами orchestration monitor, например `30s` или `1m`;
+- `DROP_FORGE_REPOSITORY_URL` — обязательный URL целевого репозитория для proposal, Apply и Archive stage;
+- `DROP_FORGE_BASE_BRANCH`, `DROP_FORGE_REMOTE_NAME` — общие параметры git/GitHub workflow;
+- `DROP_FORGE_GIT_PATH`, `DROP_FORGE_CODEX_PATH`, `DROP_FORGE_GH_PATH` — пути к внешним CLI; `DROP_FORGE_CODEX_PATH` относится к текущей Codex-реализации `AgentExecutor`;
+- `DROP_FORGE_CLEANUP_TEMP` — удалять ли временную директорию после выполнения runner-а;
+- `DROP_FORGE_POLL_INTERVAL` — интервал между проходами orchestration monitor, например `30s` или `1m`;
+- `PROPOSAL_BRANCH_PREFIX`, `PROPOSAL_PR_TITLE_PREFIX` — proposal-specific metadata для имени ветки и PR title при создании proposal PR;
 - `LINEAR_API_URL`, `LINEAR_API_TOKEN`, `LINEAR_PROJECT_ID` — подключение к Linear и фильтр по проекту;
 - `LINEAR_STATE_READY_TO_PROPOSE_ID`, `LINEAR_STATE_READY_TO_CODE_ID`, `LINEAR_STATE_READY_TO_ARCHIVE_ID` — идентификаторы управляемых Linear state'ов для `TaskManager`;
 - `LINEAR_STATE_PROPOSING_IN_PROGRESS_ID`, `LINEAR_STATE_CODE_IN_PROGRESS_ID`, `LINEAR_STATE_ARCHIVING_IN_PROGRESS_ID` — target state IDs для in-progress переходов;
 - `LINEAR_STATE_NEED_PROPOSAL_REVIEW_ID`, `LINEAR_STATE_NEED_CODE_REVIEW_ID`, `LINEAR_STATE_NEED_ARCHIVE_REVIEW_ID` — target state IDs для review-этапов, которые `CoreOrch` использует при вызове `TaskManager.MoveTask(...)`;
-- `APP_ENV`, `APP_NAME`, `LOG_LEVEL`, `HTTP_PORT`, `OPENAI_API_KEY` — общие runtime-параметры, поддерживаемые конфигом.
+- `APP_ENV`, `APP_NAME`, `LOG_LEVEL`, `HTTP_PORT`, `OPENAI_API_KEY` — общие runtime-параметры, поддерживаемые конфигом. Если `APP_NAME` не задан, сервисное имя по умолчанию — `Drop Forge`.
+
+Локальная миграция со старой proposal-only конфигурации: замените `PROPOSAL_REPOSITORY_URL`, `PROPOSAL_BASE_BRANCH`, `PROPOSAL_REMOTE_NAME`, `PROPOSAL_CLEANUP_TEMP`, `PROPOSAL_POLL_INTERVAL`, `PROPOSAL_GIT_PATH`, `PROPOSAL_CODEX_PATH` и `PROPOSAL_GH_PATH` на соответствующие `DROP_FORGE_*` ключи. `PROPOSAL_BRANCH_PREFIX` и `PROPOSAL_PR_TITLE_PREFIX` остаются без переименования.
 
 ## Запуск
 
@@ -82,7 +85,7 @@ go run ./cmd/orchv3
 Минимальная ручная проверка:
 
 1. В Linear подготовьте задачу в state, чей ID указан в `LINEAR_STATE_READY_TO_PROPOSE_ID`.
-2. Убедитесь, что `.env` заполнен для `PROPOSAL_*`, `LINEAR_*`, `git`, `codex` и `gh`.
+2. Убедитесь, что `.env` заполнен для `DROP_FORGE_*`, proposal metadata, `LINEAR_*`, `git`, `codex` и `gh`.
 3. Запустите `go run ./cmd/orchv3`.
 4. Проверьте, что в Linear к задаче прикрепился PR URL, а state сменился на `LINEAR_STATE_NEED_PROPOSAL_REVIEW_ID`.
 5. Для Apply подготовьте задачу в state из `LINEAR_STATE_READY_TO_CODE_ID` с attached Pull Request URL; после успешного прохода state должен смениться на `LINEAR_STATE_NEED_CODE_REVIEW_ID`, а изменения появиться в ветке PR.

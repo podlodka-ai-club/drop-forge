@@ -38,14 +38,14 @@ The system SHALL keep the proposal runner module available for internal orchestr
 - **THEN** the CLI does not call the proposal runner directly
 
 ### Requirement: Runtime configuration from environment files
-The system SHALL read runtime configuration from `.env` with `github.com/joho/godotenv` and environment variables, including the target GitHub repository, branch settings, and external command paths.
+The system SHALL read runtime configuration from `.env` with `github.com/joho/godotenv` and environment variables, including shared Drop Forge repository settings, branch settings, and external command paths. Repository URL, base branch, remote name, cleanup behavior, and external command paths SHALL use the shared `DROP_FORGE_*` keys. Proposal-only PR metadata settings SHALL remain under proposal-specific keys.
 
 #### Scenario: Repository is configured in env
-- **WHEN** `.env` or the process environment contains the target repository setting
+- **WHEN** `.env` or the process environment contains `DROP_FORGE_REPOSITORY_URL`
 - **THEN** the system uses that repository for `git clone`
 
 #### Scenario: Required repository setting is missing
-- **WHEN** the target repository setting is absent
+- **WHEN** `DROP_FORGE_REPOSITORY_URL` is absent
 - **THEN** the system returns a configuration error before running the proposal workflow
 
 #### Scenario: Environment overrides dot env
@@ -56,12 +56,20 @@ The system SHALL read runtime configuration from `.env` with `github.com/joho/go
 - **WHEN** `.env` contains values that rely on supported godotenv syntax such as quoted strings or inline comments
 - **THEN** the system loads those values using godotenv-compatible parsing
 
+#### Scenario: Proposal metadata remains proposal-specific
+- **WHEN** `.env` or the process environment contains `PROPOSAL_BRANCH_PREFIX` and `PROPOSAL_PR_TITLE_PREFIX`
+- **THEN** the proposal runner uses those values for proposal PR branch names and titles
+
 ### Requirement: Environment variable template
-The repository SHALL keep `.env.example` synchronized with all supported configuration keys without secrets or default values.
+The repository SHALL keep `.env.example` synchronized with all supported configuration keys without secrets or default values, using `DROP_FORGE_*` keys for shared runtime settings and proposal-specific keys only for proposal PR metadata.
 
 #### Scenario: Template lists runtime keys
 - **WHEN** a developer needs to configure the proposal runner locally
-- **THEN** `.env.example` lists the required keys without committed values
+- **THEN** `.env.example` lists the required shared `DROP_FORGE_*` keys and proposal-specific metadata keys without committed values
+
+#### Scenario: Template excludes removed shared proposal keys
+- **WHEN** a developer opens `.env.example`
+- **THEN** it does not list removed shared keys such as `PROPOSAL_REPOSITORY_URL`, `PROPOSAL_BASE_BRANCH`, `PROPOSAL_REMOTE_NAME`, `PROPOSAL_CLEANUP_TEMP`, `PROPOSAL_GIT_PATH`, `PROPOSAL_CODEX_PATH`, or `PROPOSAL_GH_PATH`
 
 ### Requirement: Temporary clone workspace
 The system SHALL create a unique temporary directory for each run, clone the configured GitHub repository into that directory using `git clone`, and preserve the temporary directory by default for diagnostics.
@@ -102,7 +110,7 @@ The system SHALL execute the OpenSpec proposal generation step through an intern
 - **THEN** the system logs agent output and returns an error that identifies the agent proposal step
 
 ### Requirement: Console logging of workflow steps
-The system SHALL log all workflow steps and agent execution interaction to the console as JSON Lines application log events, including prompt text, command output, PR creation progress, and final PR URL.
+The system SHALL log all workflow steps and agent execution interaction to the console as JSON Lines application log events under the Drop Forge application identity, including prompt text, command output, PR creation progress, and final PR URL.
 
 #### Scenario: Workflow emits structured step logs
 - **WHEN** the proposal runner executes a workflow
@@ -122,7 +130,7 @@ The system SHALL log all workflow steps and agent execution interaction to the c
 
 #### Scenario: CLI startup emits structured log
 - **WHEN** the CLI starts without a proposal task description
-- **THEN** the startup message is written as a JSON log event with `module` set to `cli` and `type` set to `info`
+- **THEN** the startup message is written as a JSON log event with `module` set to `cli`, `type` set to `info`, and Drop Forge as the default application identity
 
 #### Scenario: CLI fatal error emits structured log
 - **WHEN** the CLI cannot load configuration, read the task description, or run the proposal workflow
@@ -174,7 +182,7 @@ The system SHALL publish the last non-empty agent response as a separate comment
 - **THEN** the system returns an error that identifies the comment step and logs the comment creation output
 
 ### Requirement: PR metadata is derived from task Title and Identifier
-The system SHALL derive the PR title, branch name, and commit message from the `ProposalInput`'s `Title` and `Identifier` fields, not from the `AgentPrompt`. When `Identifier` is non-empty, the human-readable display name used for these metadata SHALL be `"<Identifier>: <Title>"`; otherwise it SHALL be `<Title>` alone. The `AgentPrompt` field SHALL NOT influence PR title, branch name, or commit message.
+The system SHALL derive the PR title, branch name, and commit message from the `ProposalInput`'s `Title` and `Identifier` fields, not from the `AgentPrompt`. When `Identifier` is non-empty, the human-readable display name used for these metadata SHALL be `"<Identifier>: <Title>"`; otherwise it SHALL be `<Title>` alone. The `AgentPrompt` field SHALL NOT influence PR title, branch name, or commit message. The PR body SHALL identify Drop Forge as the generating application.
 
 #### Scenario: Identifier and Title produce combined PR title
 - **WHEN** the proposal runner receives a `ProposalInput` with `Identifier="ZIM-42"` and `Title="Add export feature"`
@@ -193,6 +201,10 @@ The system SHALL derive the PR title, branch name, and commit message from the `
 #### Scenario: Title with embedded newlines is normalized
 - **WHEN** the proposal runner receives a `ProposalInput` whose `Title` contains a newline character
 - **THEN** the resulting PR title contains the title text with newlines replaced by spaces and is truncated to the configured maximum length
+
+#### Scenario: PR body names Drop Forge
+- **WHEN** the proposal runner creates a pull request body
+- **THEN** the body identifies the generated proposal as created by Drop Forge
 
 ### Requirement: Integration test covers orchestrator-to-runner contract
 The repository SHALL include a test that exercises `coreorch.BuildProposalInput` together with the proposal runner's PR-title derivation, and that fails if PR title, branch name, or commit message stop reflecting the source task's `Title` (and `Identifier` when present).
@@ -222,3 +234,4 @@ The proposal runner SHALL use the internal `GitManager` package for repository c
 #### Scenario: Proposal runner repository dependency is testable
 - **WHEN** a unit test constructs the proposal runner with a fake `GitManager`
 - **THEN** the test can assert proposal workflow decisions without executing real git, GitHub CLI, Codex CLI, or network calls
+

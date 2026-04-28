@@ -94,7 +94,7 @@ The system SHALL allow a caller to associate a pull request URL with a managed L
 - **THEN** the task manager returns an error that identifies the task and the PR attachment operation
 
 ### Requirement: Runtime configuration for Linear task management
-The system SHALL read Linear task manager runtime parameters from `.env` and environment variables, including the target Linear project, managed workflow state IDs, in-progress target state IDs, and configured review target state IDs, and the repository SHALL keep `.env.example` synchronized with those keys without committed values.
+The system SHALL read Linear task manager runtime parameters from `.env` and environment variables, including the target Linear project, managed workflow state IDs, in-progress target state IDs, and configured review target state IDs. Shared Drop Forge runtime settings such as repository, polling, cleanup, and command paths SHALL NOT be configured through Linear-specific keys, and the repository SHALL keep `.env.example` synchronized with supported Linear keys without committed values.
 
 #### Scenario: Linear task manager configuration is present
 - **WHEN** the environment contains the required Linear connection, project filter, managed state IDs, in-progress target state IDs, and review target state IDs
@@ -107,6 +107,14 @@ The system SHALL read Linear task manager runtime parameters from `.env` and env
 #### Scenario: Environment example lists in-progress workflow states
 - **WHEN** a developer opens `.env.example`
 - **THEN** it includes keys for `LINEAR_STATE_PROPOSING_IN_PROGRESS_ID`, `LINEAR_STATE_CODE_IN_PROGRESS_ID`, and `LINEAR_STATE_ARCHIVING_IN_PROGRESS_ID` without default values
+
+#### Scenario: Environment example keeps Linear keys separate
+- **WHEN** a developer opens `.env.example`
+- **THEN** Linear connection and workflow state keys are grouped separately from shared `DROP_FORGE_*` runtime keys
+
+#### Scenario: Shared runtime keys are not duplicated under Linear
+- **WHEN** configuration loading reads repository URL, polling interval, cleanup behavior, or external command paths
+- **THEN** it reads those values from `DROP_FORGE_*` keys and not from Linear-specific keys
 
 ### Requirement: In-progress state IDs are transition targets only
 The task manager SHALL keep configured in-progress workflow state IDs available as transition targets without treating those states as managed input queues for task selection.
@@ -179,3 +187,4 @@ The task manager SHALL keep `LINEAR_STATE_READY_TO_ARCHIVE_ID`, `LINEAR_STATE_AR
 #### Scenario: Archive transition failure is returned with context
 - **WHEN** Linear rejects an archive-route state transition for a managed task
 - **THEN** the task manager returns an error that identifies the task and requested state transition
+

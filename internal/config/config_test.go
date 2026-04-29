@@ -51,6 +51,11 @@ var envKeys = []string{
 	"LOGSTASH_ADDR",
 	"LOGSTASH_BUFFER_SIZE",
 	"LOGSTASH_DIAL_TIMEOUT",
+	"TELEGRAM_NOTIFICATIONS_ENABLED",
+	"TELEGRAM_BOT_TOKEN",
+	"TELEGRAM_CHAT_ID",
+	"TELEGRAM_API_URL",
+	"TELEGRAM_TIMEOUT",
 }
 
 func TestLoadUsesDefaults(t *testing.T) {
@@ -103,6 +108,12 @@ func TestLoadUsesDefaults(t *testing.T) {
 	}
 	if cfg.Logstash.DialTimeout != defaultLogstashDialTimeout {
 		t.Fatalf("Logstash.DialTimeout = %v, want %v", cfg.Logstash.DialTimeout, defaultLogstashDialTimeout)
+	}
+	if cfg.Telegram.Enabled {
+		t.Fatal("Telegram.Enabled = true, want false by default")
+	}
+	if cfg.Telegram.BotToken != "" || cfg.Telegram.ChatID != "" || cfg.Telegram.APIURL != "" || cfg.Telegram.Timeout != 0 {
+		t.Fatalf("Telegram config = %#v, want empty when disabled", cfg.Telegram)
 	}
 }
 
@@ -187,6 +198,11 @@ func TestLoadReadsEnvironment(t *testing.T) {
 	t.Setenv("LINEAR_STATE_NEED_PROPOSAL_REVIEW_ID", "state-proposal-review")
 	t.Setenv("LINEAR_STATE_NEED_CODE_REVIEW_ID", "state-code-review")
 	t.Setenv("LINEAR_STATE_NEED_ARCHIVE_REVIEW_ID", "state-archive-review")
+	t.Setenv("TELEGRAM_NOTIFICATIONS_ENABLED", "true")
+	t.Setenv("TELEGRAM_BOT_TOKEN", "bot-token")
+	t.Setenv("TELEGRAM_CHAT_ID", "chat-123")
+	t.Setenv("TELEGRAM_API_URL", "https://api.telegram.example/")
+	t.Setenv("TELEGRAM_TIMEOUT", "3s")
 
 	cfg, err := Load()
 	if err != nil {
@@ -281,6 +297,107 @@ func TestLoadReadsEnvironment(t *testing.T) {
 	}
 	if taskManagerCfg.NeedArchiveReviewStateID != "state-archive-review" {
 		t.Fatalf("NeedArchiveReviewStateID = %q", taskManagerCfg.NeedArchiveReviewStateID)
+	}
+
+	if !cfg.Telegram.Enabled {
+		t.Fatal("Telegram.Enabled = false, want true")
+	}
+	if cfg.Telegram.BotToken != "bot-token" {
+		t.Fatalf("Telegram.BotToken = %q", cfg.Telegram.BotToken)
+	}
+	if cfg.Telegram.ChatID != "chat-123" {
+		t.Fatalf("Telegram.ChatID = %q", cfg.Telegram.ChatID)
+	}
+	if cfg.Telegram.APIURL != "https://api.telegram.example" {
+		t.Fatalf("Telegram.APIURL = %q", cfg.Telegram.APIURL)
+	}
+	if cfg.Telegram.Timeout != 3*time.Second {
+		t.Fatalf("Telegram.Timeout = %v", cfg.Telegram.Timeout)
+	}
+}
+
+func TestLoadTelegramDisabledDoesNotRequireDeliverySettings(t *testing.T) {
+	isolateEnv(t)
+	t.Setenv("TELEGRAM_NOTIFICATIONS_ENABLED", "false")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned error: %v", err)
+	}
+
+	if cfg.Telegram.Enabled {
+		t.Fatal("Telegram.Enabled = true, want false")
+	}
+}
+
+func TestLoadTelegramEnabledRequiresDeliverySettings(t *testing.T) {
+	tests := []struct {
+		name    string
+		setup   func(t *testing.T)
+		wantErr string
+	}{
+		{
+			name: "missing token",
+			setup: func(t *testing.T) {
+				t.Setenv("TELEGRAM_CHAT_ID", "chat-123")
+				t.Setenv("TELEGRAM_API_URL", "https://api.telegram.example")
+				t.Setenv("TELEGRAM_TIMEOUT", "2s")
+			},
+			wantErr: "TELEGRAM_BOT_TOKEN",
+		},
+		{
+			name: "missing chat id",
+			setup: func(t *testing.T) {
+				t.Setenv("TELEGRAM_BOT_TOKEN", "bot-token")
+				t.Setenv("TELEGRAM_API_URL", "https://api.telegram.example")
+				t.Setenv("TELEGRAM_TIMEOUT", "2s")
+			},
+			wantErr: "TELEGRAM_CHAT_ID",
+		},
+		{
+			name: "missing api url",
+			setup: func(t *testing.T) {
+				t.Setenv("TELEGRAM_BOT_TOKEN", "bot-token")
+				t.Setenv("TELEGRAM_CHAT_ID", "chat-123")
+				t.Setenv("TELEGRAM_TIMEOUT", "2s")
+			},
+			wantErr: "TELEGRAM_API_URL",
+		},
+		{
+			name: "missing timeout",
+			setup: func(t *testing.T) {
+				t.Setenv("TELEGRAM_BOT_TOKEN", "bot-token")
+				t.Setenv("TELEGRAM_CHAT_ID", "chat-123")
+				t.Setenv("TELEGRAM_API_URL", "https://api.telegram.example")
+			},
+			wantErr: "TELEGRAM_TIMEOUT",
+		},
+		{
+			name: "non-positive timeout",
+			setup: func(t *testing.T) {
+				t.Setenv("TELEGRAM_BOT_TOKEN", "bot-token")
+				t.Setenv("TELEGRAM_CHAT_ID", "chat-123")
+				t.Setenv("TELEGRAM_API_URL", "https://api.telegram.example")
+				t.Setenv("TELEGRAM_TIMEOUT", "0")
+			},
+			wantErr: "TELEGRAM_TIMEOUT",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isolateEnv(t)
+			t.Setenv("TELEGRAM_NOTIFICATIONS_ENABLED", "true")
+			tt.setup(t)
+
+			_, err := Load()
+			if err == nil {
+				t.Fatal("Load() error = nil, want non-nil")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Load() error = %q, want substring %q", err.Error(), tt.wantErr)
+			}
+		})
 	}
 }
 

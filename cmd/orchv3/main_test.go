@@ -14,6 +14,7 @@ import (
 	"orchv3/internal/archiverunner"
 	"orchv3/internal/config"
 	"orchv3/internal/coreorch"
+	"orchv3/internal/events"
 	"orchv3/internal/proposalrunner"
 	"orchv3/internal/reviewrunner"
 	"orchv3/internal/steplog"
@@ -122,9 +123,10 @@ func TestRunDefaultWiresDependenciesAndKeepsStdoutEmpty(t *testing.T) {
 	var stderr bytes.Buffer
 	deps := testDeps()
 	state := &cliTestState{}
-	deps.newTaskManager = func(cfg config.LinearTaskManagerConfig, logOut io.Writer) coreorch.TaskManager {
+	deps.newTaskManager = func(cfg config.LinearTaskManagerConfig, logOut io.Writer, publisher events.Publisher) coreorch.TaskManager {
 		state.taskManagerConfig = cfg
 		state.taskManagerLogOut = logOut
+		state.taskManagerPublisher = publisher
 		return &fakeTaskManager{}
 	}
 	deps.newProposalRunner = func(cfg config.Config, logOut io.Writer) singleProposalRunner {
@@ -201,6 +203,9 @@ func TestRunDefaultWiresDependenciesAndKeepsStdoutEmpty(t *testing.T) {
 	}
 	if state.taskManagerLogOut == nil || state.runnerLogOut == nil || state.applyRunnerLogOut == nil || state.archiveRunnerLogOut == nil || state.orchestratorLogOut == nil {
 		t.Fatal("log outputs should be wired")
+	}
+	if state.taskManagerPublisher == nil {
+		t.Fatal("task manager publisher should be wired")
 	}
 	if state.orchestratorTaskManager == nil || state.orchestratorRunner == nil || state.orchestratorApplyRunner == nil || state.orchestratorArchiveRunner == nil {
 		t.Fatal("orchestrator dependencies should be wired")
@@ -281,6 +286,45 @@ func TestRunWithDepsWiresReviewRunnerWhenAIReviewConfigured(t *testing.T) {
 	}
 	if !state.orchestratorConfig.Review.Enabled(state.orchestratorConfig.TaskManager) {
 		t.Fatal("Review.Enabled should be true under AI-review env")
+	}
+}
+
+func TestBuildEventPublisherRegistersTelegramOnlyWhenEnabled(t *testing.T) {
+	taskManagerCfg := config.LinearTaskManagerConfig{
+		NeedProposalReviewStateID: "state-proposal-review",
+		NeedCodeReviewStateID:     "state-code-review",
+		NeedArchiveReviewStateID:  "state-archive-review",
+	}
+	disabledPublisher, err := buildEventPublisher(config.TelegramConfig{}, taskManagerCfg, io.Discard)
+	if err != nil {
+		t.Fatalf("buildEventPublisher(disabled) returned error: %v", err)
+	}
+	if err := disabledPublisher.Publish(context.Background(), events.Event{
+		Type:    events.TaskStatusChangedType,
+		Payload: events.TaskStatusChanged{TaskID: "task-1", TargetStateID: "state-1"},
+	}); err != nil {
+		t.Fatalf("disabled publisher Publish() returned error: %v", err)
+	}
+
+	enabledPublisher, err := buildEventPublisher(config.TelegramConfig{
+		Enabled:  true,
+		BotToken: "token-123",
+		ChatID:   "chat-456",
+		APIURL:   "http://127.0.0.1:1",
+		Timeout:  time.Millisecond,
+	}, taskManagerCfg, io.Discard)
+	if err != nil {
+		t.Fatalf("buildEventPublisher(enabled) returned error: %v", err)
+	}
+	err = enabledPublisher.Publish(context.Background(), events.Event{
+		Type:    events.TaskStatusChangedType,
+		Payload: events.TaskStatusChanged{TaskID: "task-1", TargetStateID: "state-code-review"},
+	})
+	if err == nil {
+		t.Fatal("enabled publisher Publish() error = nil, want telegram subscriber delivery error")
+	}
+	if !strings.Contains(err.Error(), "send telegram message") {
+		t.Fatalf("Publish() error = %q, want telegram delivery context", err.Error())
 	}
 }
 
@@ -446,6 +490,7 @@ func emptyTempFile(t *testing.T) *os.File {
 type cliTestState struct {
 	taskManagerConfig         config.LinearTaskManagerConfig
 	taskManagerLogOut         io.Writer
+	taskManagerPublisher      events.Publisher
 	runnerConfig              config.Config
 	runnerLogOut              io.Writer
 	applyRunnerConfig         config.Config
@@ -514,6 +559,10 @@ func (manager *fakeTaskManager) MoveTask(ctx context.Context, taskID string, sta
 	return nil
 }
 
+func (manager *fakeTaskManager) MoveTaskWithContext(ctx context.Context, taskID string, stateID string, statusContext taskmanager.StatusChangeContext) error {
+	return nil
+}
+
 type fakeProposalMonitor struct {
 	calls    int
 	interval time.Duration
@@ -564,7 +613,8 @@ func testDeps() appDeps {
 		newReviewRunner: func(cfg config.Config, logOut io.Writer) singleReviewRunner {
 			return nil
 		},
-		newTaskManager: func(cfg config.LinearTaskManagerConfig, logOut io.Writer) coreorch.TaskManager {
+		newEventPublisher: buildEventPublisher,
+		newTaskManager: func(cfg config.LinearTaskManagerConfig, logOut io.Writer, publisher events.Publisher) coreorch.TaskManager {
 			return &fakeTaskManager{}
 		},
 		newProposalOrchestrator: func(cfg config.Config, tasks coreorch.TaskManager, proposalRunner coreorch.ProposalRunner, applyRunner coreorch.ApplyRunner, archiveRunner coreorch.ArchiveRunner, reviewRunner coreorch.ReviewRunner, logOut io.Writer) proposalMonitor {

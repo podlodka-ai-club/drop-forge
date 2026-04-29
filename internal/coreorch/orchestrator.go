@@ -2,11 +2,13 @@ package coreorch
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"orchv3/internal/agentmeta"
@@ -24,6 +26,7 @@ type TaskManager interface {
 	GetTasks(ctx context.Context) ([]taskmanager.Task, error)
 	AddPR(ctx context.Context, taskID string, prURL string) error
 	MoveTask(ctx context.Context, taskID string, stateID string) error
+	MoveTaskWithContext(ctx context.Context, taskID string, stateID string, statusContext taskmanager.StatusChangeContext) error
 }
 
 type ProposalRunner interface {
@@ -86,35 +89,60 @@ func (orch *Orchestrator) RunProposalsOnce(ctx context.Context) error {
 	proposalCount := 0
 	applyCount := 0
 	archiveCount := 0
+	var wg sync.WaitGroup
+	var errsMu sync.Mutex
+	var errs []error
+	collectErr := func(err error) {
+		if err == nil {
+			return
+		}
+		errsMu.Lock()
+		defer errsMu.Unlock()
+		errs = append(errs, err)
+	}
+
 	for _, task := range tasks {
+		task := task
 		switch {
 		case task.State.ID == orch.Config.ReadyToProposeStateID:
 			proposalCount++
-			if err := orch.processProposalTask(ctx, logger, task); err != nil {
-				return err
-			}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				collectErr(orch.processProposalTask(ctx, logger, task))
+			}()
 		case task.State.ID == orch.Config.ReadyToCodeStateID:
 			applyCount++
-			if err := orch.processApplyTask(ctx, logger, task); err != nil {
-				return err
-			}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				collectErr(orch.processApplyTask(ctx, logger, task))
+			}()
 		case task.State.ID == orch.Config.ReadyToArchiveStateID:
 			archiveCount++
-			if err := orch.processArchiveTask(ctx, logger, task); err != nil {
-				return err
-			}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				collectErr(orch.processArchiveTask(ctx, logger, task))
+			}()
 		case orch.Config.NeedProposalAIReviewStateID != "" && task.State.ID == orch.Config.NeedProposalAIReviewStateID:
-			if err := orch.routeReview(ctx, logger, task, agentmeta.StageProposal, orch.Config.NeedProposalReviewStateID); err != nil {
-				return err
-			}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				collectErr(orch.routeReview(ctx, logger, task, agentmeta.StageProposal, orch.Config.NeedProposalReviewStateID, "Need Proposal Review"))
+			}()
 		case orch.Config.NeedCodeAIReviewStateID != "" && task.State.ID == orch.Config.NeedCodeAIReviewStateID:
-			if err := orch.routeReview(ctx, logger, task, agentmeta.StageApply, orch.Config.NeedCodeReviewStateID); err != nil {
-				return err
-			}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				collectErr(orch.routeReview(ctx, logger, task, agentmeta.StageApply, orch.Config.NeedCodeReviewStateID, "Need Code Review"))
+			}()
 		case orch.Config.NeedArchiveAIReviewStateID != "" && task.State.ID == orch.Config.NeedArchiveAIReviewStateID:
-			if err := orch.routeReview(ctx, logger, task, agentmeta.StageArchive, orch.Config.NeedArchiveReviewStateID); err != nil {
-				return err
-			}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				collectErr(orch.routeReview(ctx, logger, task, agentmeta.StageArchive, orch.Config.NeedArchiveReviewStateID, "Need Archive Review"))
+			}()
 		default:
 			logger.Infof(
 				module,
@@ -136,7 +164,8 @@ func (orch *Orchestrator) RunProposalsOnce(ctx context.Context) error {
 		logger.Infof(module, "no ready-to-archive tasks found")
 	}
 
-	return nil
+	wg.Wait()
+	return errors.Join(errs...)
 }
 
 func (orch *Orchestrator) RunProposalsLoop(ctx context.Context, interval time.Duration) error {
@@ -198,10 +227,13 @@ func (orch *Orchestrator) processProposalTask(ctx context.Context, logger steplo
 	}
 
 	target := orch.Config.NeedProposalReviewStateID
+	targetName := "Need Proposal Review"
 	if orch.Config.AIReviewEnabled {
 		target = orch.Config.NeedProposalAIReviewStateID
+		targetName = "Need Proposal AI Review"
 	}
-	if err := orch.TaskManager.MoveTask(ctx, task.ID, target); err != nil {
+	statusContext := reviewStatusContext(task, targetName, prURL, "")
+	if err := orch.TaskManager.MoveTaskWithContext(ctx, task.ID, target, statusContext); err != nil {
 		logger.Errorf(module, "move proposal task %s pr=%s state=%s: %v", taskRef, prURL, target, err)
 		return fmt.Errorf("process proposal %s: move to proposal review state %s after attaching pr %s: %w", taskRef, target, prURL, err)
 	}
@@ -231,10 +263,13 @@ func (orch *Orchestrator) processApplyTask(ctx context.Context, logger steplog.L
 	}
 
 	target := orch.Config.NeedCodeReviewStateID
+	targetName := "Need Code Review"
 	if orch.Config.AIReviewEnabled {
 		target = orch.Config.NeedCodeAIReviewStateID
+		targetName = "Need Code AI Review"
 	}
-	if err := orch.TaskManager.MoveTask(ctx, task.ID, target); err != nil {
+	statusContext := reviewStatusContext(task, targetName, applyInput.PRURL, applyInput.BranchName)
+	if err := orch.TaskManager.MoveTaskWithContext(ctx, task.ID, target, statusContext); err != nil {
 		logger.Errorf(module, "move apply task %s state=%s: %v", taskRef, target, err)
 		return fmt.Errorf("process apply %s: move to code review state %s: %w", taskRef, target, err)
 	}
@@ -264,10 +299,13 @@ func (orch *Orchestrator) processArchiveTask(ctx context.Context, logger steplog
 	}
 
 	target := orch.Config.NeedArchiveReviewStateID
+	targetName := "Need Archive Review"
 	if orch.Config.AIReviewEnabled {
 		target = orch.Config.NeedArchiveAIReviewStateID
+		targetName = "Need Archive AI Review"
 	}
-	if err := orch.TaskManager.MoveTask(ctx, task.ID, target); err != nil {
+	statusContext := reviewStatusContext(task, targetName, archiveInput.PRURL, archiveInput.BranchName)
+	if err := orch.TaskManager.MoveTaskWithContext(ctx, task.ID, target, statusContext); err != nil {
 		logger.Errorf(module, "move archive task %s state=%s: %v", taskRef, target, err)
 		return fmt.Errorf("process archive %s: move to archive review state %s: %w", taskRef, target, err)
 	}
@@ -354,7 +392,7 @@ func parseGitHubPR(prURL string) (string, string, int, error) {
 	return parts[0], parts[1], num, nil
 }
 
-func (orch *Orchestrator) processReviewTask(ctx context.Context, logger steplog.Logger, task taskmanager.Task, stage agentmeta.Stage, targetState string) error {
+func (orch *Orchestrator) processReviewTask(ctx context.Context, logger steplog.Logger, task taskmanager.Task, stage agentmeta.Stage, targetState string, targetStateName string) error {
 	taskRef := taskReference(task)
 	logger.Infof(module, "process %s ai-review task=%s identifier=%s", stage, task.ID, task.Identifier)
 	in, err := BuildReviewInput(task, stage)
@@ -366,7 +404,8 @@ func (orch *Orchestrator) processReviewTask(ctx context.Context, logger steplog.
 		logger.Errorf(module, "run %s ai-review %s: %v", stage, taskRef, err)
 		return fmt.Errorf("process %s ai-review %s: run review: %w", stage, taskRef, err)
 	}
-	if err := orch.TaskManager.MoveTask(ctx, task.ID, targetState); err != nil {
+	statusContext := reviewStatusContext(task, targetStateName, in.PRURL, in.BranchName)
+	if err := orch.TaskManager.MoveTaskWithContext(ctx, task.ID, targetState, statusContext); err != nil {
 		logger.Errorf(module, "move %s review task %s state=%s: %v", stage, taskRef, targetState, err)
 		return fmt.Errorf("process %s ai-review %s: move to human review state %s: %w", stage, taskRef, targetState, err)
 	}
@@ -374,7 +413,7 @@ func (orch *Orchestrator) processReviewTask(ctx context.Context, logger steplog.
 	return nil
 }
 
-func (orch *Orchestrator) routeReview(ctx context.Context, logger steplog.Logger, task taskmanager.Task, stage agentmeta.Stage, targetState string) error {
+func (orch *Orchestrator) routeReview(ctx context.Context, logger steplog.Logger, task taskmanager.Task, stage agentmeta.Stage, targetState string, targetStateName string) error {
 	if !orch.Config.AIReviewEnabled {
 		logger.Infof(module, "skip ai-review task=%s identifier=%s state=%s reason=feature_disabled", task.ID, task.Identifier, task.State.ID)
 		return nil
@@ -382,7 +421,7 @@ func (orch *Orchestrator) routeReview(ctx context.Context, logger steplog.Logger
 	if orch.ReviewRunner == nil {
 		return fmt.Errorf("ai-review enabled but ReviewRunner is nil")
 	}
-	return orch.processReviewTask(ctx, logger, task, stage, targetState)
+	return orch.processReviewTask(ctx, logger, task, stage, targetState, targetStateName)
 }
 
 func BuildArchiveInput(task taskmanager.Task) (archiverunner.ArchiveInput, error) {
@@ -416,12 +455,24 @@ func branchSource(pullRequests []taskmanager.PullRequest) (string, string) {
 		if prURL == "" {
 			prURL = strings.TrimSpace(pullRequest.URL)
 		}
-		if branchName != "" || prURL != "" {
+		if branchName != "" && prURL != "" {
 			break
 		}
 	}
 
 	return prURL, branchName
+}
+
+func reviewStatusContext(task taskmanager.Task, targetStateName string, prURL string, branchName string) taskmanager.StatusChangeContext {
+	return taskmanager.StatusChangeContext{
+		TaskIdentifier:    task.Identifier,
+		TaskTitle:         task.Title,
+		SourceStateID:     task.State.ID,
+		SourceStateName:   task.State.Name,
+		TargetStateName:   targetStateName,
+		PullRequestURL:    prURL,
+		PullRequestBranch: branchName,
+	}
 }
 
 func buildAgentPrompt(task taskmanager.Task) string {
@@ -547,7 +598,18 @@ func writerOrDiscard(writer io.Writer) io.Writer {
 		return io.Discard
 	}
 
-	return writer
+	return &lockedWriter{writer: writer}
+}
+
+type lockedWriter struct {
+	mu     sync.Mutex
+	writer io.Writer
+}
+
+func (writer *lockedWriter) Write(p []byte) (int, error) {
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+	return writer.writer.Write(p)
 }
 
 func waitInterval(ctx context.Context, interval time.Duration) error {

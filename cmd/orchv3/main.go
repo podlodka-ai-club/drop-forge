@@ -14,6 +14,8 @@ import (
 	"orchv3/internal/commandrunner"
 	"orchv3/internal/config"
 	"orchv3/internal/coreorch"
+	"orchv3/internal/events"
+	telegramnotifications "orchv3/internal/notifications/telegram"
 	"orchv3/internal/proposalrunner"
 	"orchv3/internal/reviewrunner"
 	"orchv3/internal/reviewrunner/prcommenter"
@@ -48,7 +50,8 @@ type appDeps struct {
 	newApplyRunner          func(cfg config.Config, logOut io.Writer) singleApplyRunner
 	newArchiveRunner        func(cfg config.Config, logOut io.Writer) singleArchiveRunner
 	newReviewRunner         func(cfg config.Config, logOut io.Writer) singleReviewRunner
-	newTaskManager          func(cfg config.LinearTaskManagerConfig, logOut io.Writer) coreorch.TaskManager
+	newEventPublisher       func(telegramCfg config.TelegramConfig, taskManagerCfg config.LinearTaskManagerConfig, logOut io.Writer) (events.Publisher, error)
+	newTaskManager          func(cfg config.LinearTaskManagerConfig, logOut io.Writer, publisher events.Publisher) coreorch.TaskManager
 	newProposalOrchestrator func(cfg config.Config, tasks coreorch.TaskManager, proposalRunner coreorch.ProposalRunner, applyRunner coreorch.ApplyRunner, archiveRunner coreorch.ArchiveRunner, reviewRunner coreorch.ReviewRunner, logOut io.Writer) proposalMonitor
 }
 
@@ -83,7 +86,13 @@ func runWithDeps(args []string, stdin *os.File, stdout io.Writer, stderr io.Writ
 		defer func() { _ = closer.Close() }()
 	}
 
-	taskManager := deps.newTaskManager(cfg.TaskManager, logOut)
+	publisher, err := deps.newEventPublisher(cfg.Telegram, cfg.TaskManager, logOut)
+	if err != nil {
+		logger.Errorf("cli", "build event publisher: %v", err)
+		return 1
+	}
+
+	taskManager := deps.newTaskManager(cfg.TaskManager, logOut, publisher)
 	proposalRunner := deps.newProposalRunner(cfg, logOut)
 	applyRunner := deps.newApplyRunner(cfg, logOut)
 	archiveRunner := deps.newArchiveRunner(cfg, logOut)
@@ -232,9 +241,11 @@ func defaultDeps() appDeps {
 				Stderr:      logOut,
 			}
 		},
-		newTaskManager: func(cfg config.LinearTaskManagerConfig, logOut io.Writer) coreorch.TaskManager {
+		newEventPublisher: buildEventPublisher,
+		newTaskManager: func(cfg config.LinearTaskManagerConfig, logOut io.Writer, publisher events.Publisher) coreorch.TaskManager {
 			manager := taskmanager.New(cfg)
 			manager.LogWriter = logOut
+			manager.Publisher = publisher
 			return manager
 		},
 		newProposalOrchestrator: func(cfg config.Config, tasks coreorch.TaskManager, proposalRunner coreorch.ProposalRunner, applyRunner coreorch.ApplyRunner, archiveRunner coreorch.ArchiveRunner, reviewRunner coreorch.ReviewRunner, logOut io.Writer) proposalMonitor {
@@ -264,4 +275,31 @@ func defaultDeps() appDeps {
 			}
 		},
 	}
+}
+
+func buildEventPublisher(cfg config.TelegramConfig, taskManagerCfg config.LinearTaskManagerConfig, logOut io.Writer) (events.Publisher, error) {
+	dispatcher := events.NewDispatcher()
+	if !cfg.Enabled {
+		return dispatcher, nil
+	}
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+
+	dispatcher.Subscribe(events.TaskStatusChangedType, telegramnotifications.NewNotifier(
+		cfg,
+		taskManagerCfg.NeedProposalReviewStateID,
+		taskManagerCfg.NeedCodeReviewStateID,
+		taskManagerCfg.NeedArchiveReviewStateID,
+	))
+	steplog.New(writerOrDiscard(logOut)).Infof("cli", "telegram notifications enabled")
+	return dispatcher, nil
+}
+
+func writerOrDiscard(writer io.Writer) io.Writer {
+	if writer == nil {
+		return io.Discard
+	}
+
+	return writer
 }

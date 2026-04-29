@@ -48,17 +48,18 @@ The system SHALL build the proposal runner input as a structured `ProposalInput 
 
 ### Requirement: Existing proposal runner is used as the proposal executor
 
-The system SHALL execute proposals by calling the existing proposal runner contract with one prepared `ProposalInput` at a time and SHALL not change the proposal runner's internal git, Codex, PR, or comment workflow as part of proposal orchestration.
+The system SHALL execute proposals by calling the existing proposal runner contract with one prepared `ProposalInput` per eligible task and SHALL not change the proposal runner's internal git, Codex, PR, or comment workflow as part of proposal orchestration.
 
 #### Scenario: Proposal runner is called for eligible task
 
 - **WHEN** a ready-to-propose task is processed
 - **THEN** the orchestration stage calls the proposal runner with the prepared `ProposalInput`
 
-#### Scenario: Multiple tasks are processed sequentially
+#### Scenario: Multiple proposal tasks are started concurrently
 
 - **WHEN** multiple ready-to-propose tasks are returned in one orchestration pass
-- **THEN** the orchestration stage runs the proposal runner for one task at a time in the returned order
+- **THEN** the orchestration stage starts proposal processing for each eligible task in a separate goroutine
+- **AND** one proposal task does not wait for another proposal task to finish before starting
 
 ### Requirement: Successful proposal updates the Linear task
 
@@ -235,7 +236,7 @@ The system SHALL provide an Archive orchestration stage that loads managed tasks
 #### Scenario: Proposal Apply and Archive tasks are processed in one pass
 - **WHEN** one orchestration pass receives ready-to-propose, ready-to-code, and ready-to-archive tasks
 - **THEN** the system routes each task to the executor matching its current state
-- **AND** the system processes tasks sequentially in the returned order
+- **AND** the system processes eligible tasks concurrently instead of sequentially in the returned order
 
 ### Requirement: Archive input is built from Linear task payload
 The system SHALL build Archive runner input from the selected task's identity, title, description, comments, and associated task branch source. The task branch source SHALL be either a concrete branch name or a pull request URL from which the Archive runner can resolve the branch.
@@ -333,3 +334,96 @@ The Archive orchestration stage SHALL allow tests to replace task management and
 #### Scenario: Archive task manager is substituted in tests
 - **WHEN** a unit test constructs orchestration with a fake task manager
 - **THEN** the test can assert Archive task filtering and state transition behavior without Linear API calls
+
+### Requirement: Orchestration pass runs eligible tasks concurrently
+The system SHALL start each eligible proposal, Apply, and Archive task in its own goroutine within a single orchestration pass, while continuing to route each task by its current Linear workflow state.
+
+#### Scenario: Tasks from different routes run concurrently
+- **WHEN** one orchestration pass receives ready-to-propose, ready-to-code, and ready-to-archive tasks
+- **THEN** the system starts proposal, Apply, and Archive processing in separate goroutines
+- **AND** no route waits for another route's runner to finish before starting its own eligible task
+
+#### Scenario: Multiple tasks from one route run concurrently
+- **WHEN** one orchestration pass receives multiple eligible tasks for the same route
+- **THEN** the system starts each eligible task in a separate goroutine
+- **AND** the route does not require the previous task from that route to finish before starting the next eligible task
+
+#### Scenario: Non-managed task is not started
+- **WHEN** one orchestration pass receives a task whose state does not match proposal, Apply, or Archive input states
+- **THEN** the system logs the skip decision
+- **AND** it does not start a processing goroutine for that task
+
+### Requirement: Orchestration pass waits for concurrent tasks
+The system SHALL wait for all task-processing goroutines started in a pass before the pass returns and before the continuous monitor starts the next polling wait.
+
+#### Scenario: Pass waits for slow task
+- **WHEN** one started task finishes quickly and another started task is still running
+- **THEN** the orchestration pass does not return until the slow task also finishes
+
+#### Scenario: Loop polls only after pass completion
+- **WHEN** a continuous monitor iteration starts concurrent task processing
+- **THEN** the monitor waits for the orchestration pass to finish
+- **AND** only then waits for the configured polling interval before starting the next iteration
+
+### Requirement: Concurrent task failures are aggregated
+The system SHALL collect contextual errors from all failed task goroutines and return an aggregated pass error after all started goroutines finish.
+
+#### Scenario: One task fails while another succeeds
+- **WHEN** one concurrent task returns an error and another concurrent task succeeds
+- **THEN** the orchestration pass waits for both tasks
+- **AND** returns an error that includes the failed task context
+
+#### Scenario: Multiple tasks fail
+- **WHEN** multiple concurrent tasks return errors in the same pass
+- **THEN** the orchestration pass waits for all started tasks
+- **AND** returns an aggregated error that preserves each failed task's context
+
+#### Scenario: Failed task does not cancel sibling task
+- **WHEN** one concurrent task returns an error while another task is still running
+- **THEN** the system does not cancel the sibling task solely because of that error
+- **AND** the sibling task can still complete its normal route workflow
+
+### Requirement: Per-task workflow ordering is preserved during concurrent execution
+The system SHALL keep each individual task's existing state transition and runner ordering even when multiple tasks run concurrently.
+
+#### Scenario: Proposal task keeps internal order
+- **WHEN** a ready-to-propose task is processed concurrently with other tasks
+- **THEN** the orchestration stage moves the task to proposing-in-progress before running the proposal runner
+- **AND** attaches the PR URL before moving the task to proposal review
+
+#### Scenario: Apply task keeps internal order
+- **WHEN** a ready-to-code task is processed concurrently with other tasks
+- **THEN** the orchestration stage moves the task to code-in-progress before running the Apply runner
+- **AND** moves the task to code review only after the Apply runner succeeds
+
+#### Scenario: Archive task keeps internal order
+- **WHEN** a ready-to-archive task is processed concurrently with other tasks
+- **THEN** the orchestration stage moves the task to archiving-in-progress before running the Archive runner
+- **AND** moves the task to archive review only after the Archive runner succeeds
+
+### Requirement: Apply and Archive runners delegate repository operations to GitManager
+The Apply and Archive runners SHALL use the internal `GitManager` package for repository clone workspace creation, pull request branch resolution, branch checkout, status inspection, staging, commit, and push while preserving their existing orchestration contracts.
+
+#### Scenario: Apply runner uses GitManager for task branch workflow
+- **WHEN** the Apply runner receives valid input and the agent produces changes
+- **THEN** it delegates clone workspace creation, optional PR branch resolution, branch checkout, `git status --short`, `git add`, `git commit`, and `git push` to `GitManager`
+- **AND** it completes without creating a new pull request
+
+#### Scenario: Archive runner uses GitManager for task branch workflow
+- **WHEN** the Archive runner receives valid input and the agent produces archive changes
+- **THEN** it delegates clone workspace creation, optional PR branch resolution, branch checkout, `git status --short`, `git add`, `git commit`, and `git push` to `GitManager`
+- **AND** it completes without creating a new pull request
+
+#### Scenario: Direct branch source bypasses GitHub lookup
+- **WHEN** Apply or Archive input contains a non-empty branch name
+- **THEN** the runner passes that branch directly to `GitManager` checkout
+- **AND** it does not ask `GitManager` to resolve a branch through `gh pr view`
+
+#### Scenario: Apply and Archive no-change behavior is preserved
+- **WHEN** the agent succeeds but `GitManager` returns empty short status
+- **THEN** the runner returns the existing no-changes error
+- **AND** it does not ask `GitManager` to commit or push
+
+#### Scenario: Apply and Archive repository dependency is testable
+- **WHEN** a unit test constructs Apply or Archive runner with a fake `GitManager`
+- **THEN** the test can assert runner workflow decisions without executing real git, GitHub CLI, Codex CLI, or network calls

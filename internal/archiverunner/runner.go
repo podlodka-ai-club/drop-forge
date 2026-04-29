@@ -1,18 +1,17 @@
 package archiverunner
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"orchv3/internal/agentmeta"
 	"orchv3/internal/commandrunner"
 	"orchv3/internal/config"
+	"orchv3/internal/gitmanager"
 	"orchv3/internal/proposalrunner"
 	"orchv3/internal/steplog"
 )
@@ -23,6 +22,7 @@ type Runner struct {
 	Config   config.ProposalRunnerConfig
 	Command  commandrunner.Runner
 	Agent    AgentExecutor
+	Git      GitManager
 	Producer agentmeta.Producer
 	Service  string
 	Stdout   io.Writer
@@ -30,6 +30,15 @@ type Runner struct {
 
 	MkdirTemp func(dir string, pattern string) (string, error)
 	RemoveAll func(path string) error
+}
+
+type GitManager interface {
+	Clone(ctx context.Context) (gitmanager.Workspace, error)
+	Close(workspace gitmanager.Workspace) error
+	ResolvePullRequestBranch(ctx context.Context, cloneDir string, prURL string) (string, error)
+	Checkout(ctx context.Context, cloneDir string, branchName string) error
+	StatusShort(ctx context.Context, cloneDir string) (string, error)
+	CommitAllAndPush(ctx context.Context, cloneDir string, branchName string, message string, setUpstream bool) error
 }
 
 type ArchiveInput struct {
@@ -74,8 +83,8 @@ func (runner *Runner) Run(ctx context.Context, input ArchiveInput) (err error) {
 	}
 
 	command := runner.commandRunner()
+	git := runner.gitManager(command)
 	stdout := writerOrDiscard(runner.Stdout)
-	stderr := writerOrDiscard(runner.Stderr)
 	logger := steplog.NewWithService(stdout, runner.Service)
 	defer func() {
 		if err != nil {
@@ -83,63 +92,37 @@ func (runner *Runner) Run(ctx context.Context, input ArchiveInput) (err error) {
 		}
 	}()
 
-	tempDir, err := runner.mkdirTemp("", defaultTempPattern)
-	if err != nil {
-		return fmt.Errorf("create temp dir: %w", err)
-	}
-
-	logger.Infof("temp", "created %s", tempDir)
-	defer func() {
-		if !runner.Config.CleanupTemp {
-			logger.Infof("temp", "preserving %s", tempDir)
-			return
-		}
-
-		if cleanupErr := runner.removeAll(tempDir); cleanupErr != nil {
-			logger.Errorf("temp", "cleanup failed for %s: %v", tempDir, cleanupErr)
-			if err == nil {
-				err = fmt.Errorf("cleanup temp dir %s: %w", tempDir, cleanupErr)
-			}
-			return
-		}
-
-		logger.Infof("temp", "removed %s", tempDir)
-	}()
-
-	cloneDir := filepath.Join(tempDir, "repo")
-	logger.Infof("git", "cloning %s into %s", runner.Config.RepositoryURL, cloneDir)
-	if err := runLoggedCommand(ctx, runner.Service, command, commandrunner.Command{
-		Name: runner.Config.GitPath,
-		Args: []string{"clone", runner.Config.RepositoryURL, cloneDir},
-		Dir:  tempDir,
-	}, "git", stdout, stderr); err != nil {
-		return fmt.Errorf("git clone: %w", err)
-	}
-
-	branchName, err := runner.resolveBranch(ctx, command, cloneDir, input, stdout, stderr)
+	workspace, err := git.Clone(ctx)
 	if err != nil {
 		return err
 	}
-	logger.Infof("git", "checkout branch=%s", branchName)
-	if err := runLoggedCommand(ctx, runner.Service, command, commandrunner.Command{
-		Name: runner.Config.GitPath,
-		Args: []string{"checkout", branchName},
-		Dir:  cloneDir,
-	}, "git", stdout, stderr); err != nil {
-		return fmt.Errorf("git checkout %s: %w", branchName, err)
+	defer func() {
+		if cleanupErr := git.Close(workspace); cleanupErr != nil {
+			if err == nil {
+				err = cleanupErr
+			}
+		}
+	}()
+
+	branchName, err := runner.resolveBranch(ctx, git, workspace.CloneDir, input)
+	if err != nil {
+		return err
+	}
+	if err := git.Checkout(ctx, workspace.CloneDir, branchName); err != nil {
+		return err
 	}
 
 	if _, err := runner.agentExecutor(command).Run(ctx, AgentExecutionInput{
 		TaskDescription: strings.TrimSpace(input.AgentPrompt),
-		CloneDir:        cloneDir,
-		TempDir:         tempDir,
+		CloneDir:        workspace.CloneDir,
+		TempDir:         workspace.TempDir,
 		Stdout:          stdout,
-		Stderr:          stderr,
+		Stderr:          writerOrDiscard(runner.Stderr),
 	}); err != nil {
 		return fmt.Errorf("agent archive: %w", err)
 	}
 
-	status, err := runner.gitStatus(ctx, command, cloneDir, stdout, stderr)
+	status, err := git.StatusShort(ctx, workspace.CloneDir)
 	if err != nil {
 		return err
 	}
@@ -152,15 +135,8 @@ func (runner *Runner) Run(ctx context.Context, input ArchiveInput) (err error) {
 	if runner.Producer != (agentmeta.Producer{}) {
 		commitMessage = agentmeta.AppendTrailer(commitMessage, runner.Producer)
 	}
-	for _, gitCommand := range []commandrunner.Command{
-		{Name: runner.Config.GitPath, Args: []string{"add", "-A"}, Dir: cloneDir},
-		{Name: runner.Config.GitPath, Args: []string{"commit", "-m", commitMessage}, Dir: cloneDir},
-		{Name: runner.Config.GitPath, Args: []string{"push", runner.Config.RemoteName, branchName}, Dir: cloneDir},
-	} {
-		logger.Infof("git", "%s", strings.Join(append([]string{gitCommand.Name}, gitCommand.Args...), " "))
-		if err := runLoggedCommand(ctx, runner.Service, command, gitCommand, "git", stdout, stderr); err != nil {
-			return fmt.Errorf("git %s: %w", gitCommand.Args[0], err)
-		}
+	if err := git.CommitAllAndPush(ctx, workspace.CloneDir, branchName, commitMessage, false); err != nil {
+		return err
 	}
 
 	return nil
@@ -171,45 +147,12 @@ func BuildCommitMessage(identifier string, title string) string {
 	return proposalrunner.BuildPRTitle("Archive:", displayName)
 }
 
-func (runner *Runner) resolveBranch(ctx context.Context, command commandrunner.Runner, cloneDir string, input ArchiveInput, stdout io.Writer, stderr io.Writer) (string, error) {
+func (runner *Runner) resolveBranch(ctx context.Context, git GitManager, cloneDir string, input ArchiveInput) (string, error) {
 	if branch := strings.TrimSpace(input.BranchName); branch != "" {
 		return branch, nil
 	}
 
-	prURL := strings.TrimSpace(input.PRURL)
-	var branchOutput bytes.Buffer
-	args := []string{"pr", "view", prURL, "--json", "headRefName", "--jq", ".headRefName"}
-	steplog.NewWithService(writerOrDiscard(stdout), runner.Service).Infof("github", "%s %s", runner.Config.GHPath, strings.Join(args, " "))
-	if err := runLoggedCommand(ctx, runner.Service, command, commandrunner.Command{
-		Name:   runner.Config.GHPath,
-		Args:   args,
-		Dir:    cloneDir,
-		Stdout: &branchOutput,
-	}, "github", stdout, stderr); err != nil {
-		return "", fmt.Errorf("github resolve pr branch %s: %w", prURL, err)
-	}
-
-	branch := strings.TrimSpace(branchOutput.String())
-	if branch == "" {
-		return "", fmt.Errorf("github resolve pr branch %s: empty headRefName", prURL)
-	}
-
-	return branch, nil
-}
-
-func (runner *Runner) gitStatus(ctx context.Context, command commandrunner.Runner, cloneDir string, stdout io.Writer, stderr io.Writer) (string, error) {
-	var status bytes.Buffer
-	err := runLoggedCommand(ctx, runner.Service, command, commandrunner.Command{
-		Name:   runner.Config.GitPath,
-		Args:   []string{"status", "--short"},
-		Dir:    cloneDir,
-		Stdout: &status,
-	}, "git", stdout, stderr)
-	if err != nil {
-		return "", fmt.Errorf("git status: %w", err)
-	}
-
-	return status.String(), nil
+	return git.ResolvePullRequestBranch(ctx, cloneDir, input.PRURL)
 }
 
 func validateConfig(cfg config.ProposalRunnerConfig) error {
@@ -252,43 +195,20 @@ func (runner *Runner) agentExecutor(command commandrunner.Runner) AgentExecutor 
 	}
 }
 
-func runLoggedCommand(ctx context.Context, service string, exec commandrunner.Runner, command commandrunner.Command, module string, stdout io.Writer, stderr io.Writer) error {
-	stdoutLog := steplog.NewWithService(writerOrDiscard(stdout), service).LineWriter(module)
-	stderrLog := steplog.NewWithService(writerOrDiscard(stderr), service).LineWriter(module)
-
-	stdoutWriters := []io.Writer{stdoutLog}
-	if command.Stdout != nil {
-		stdoutWriters = append(stdoutWriters, command.Stdout)
-	}
-	command.Stdout = io.MultiWriter(stdoutWriters...)
-
-	stderrWriters := []io.Writer{stderrLog}
-	if command.Stderr != nil {
-		stderrWriters = append(stderrWriters, command.Stderr)
-	}
-	command.Stderr = io.MultiWriter(stderrWriters...)
-
-	err := exec.Run(ctx, command)
-	stdoutLog.Flush()
-	stderrLog.Flush()
-
-	return err
-}
-
-func (runner *Runner) mkdirTemp(dir string, pattern string) (string, error) {
-	if runner.MkdirTemp != nil {
-		return runner.MkdirTemp(dir, pattern)
+func (runner *Runner) gitManager(command commandrunner.Runner) GitManager {
+	if runner.Git != nil {
+		return runner.Git
 	}
 
-	return os.MkdirTemp(dir, pattern)
-}
-
-func (runner *Runner) removeAll(path string) error {
-	if runner.RemoveAll != nil {
-		return runner.RemoveAll(path)
-	}
-
-	return os.RemoveAll(path)
+	manager := gitmanager.NewFromProposalConfig(runner.Config)
+	manager.Config.TempPattern = defaultTempPattern
+	manager.Command = command
+	manager.Service = runner.Service
+	manager.Stdout = writerOrDiscard(runner.Stdout)
+	manager.Stderr = writerOrDiscard(runner.Stderr)
+	manager.MkdirTemp = runner.MkdirTemp
+	manager.RemoveAll = runner.RemoveAll
+	return manager
 }
 
 func writerOrDiscard(writer io.Writer) io.Writer {

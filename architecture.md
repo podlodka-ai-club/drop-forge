@@ -44,6 +44,17 @@
 6. Если агент создал archive-изменения, `ArchiveRunner` выполняет `git add`, `commit` и `push` в ту же ветку без создания нового PR.
 7. После успешного push `CoreOrch` переводит задачу в `Need Archive Review`.
 
+## Целевой Поток Review-Stage
+
+1. `CoreOrch` в том же проходе monitor-а получает managed tasks от `TaskManager`.
+2. Задачи в `Need * AI Review` (Proposal/Code/Archive) маршрутизируются в Review-stage соответствующего этапа.
+3. `ReviewRunner` клонирует ветку задачи во временную директорию, читает producer-trailer последнего HEAD-коммита и выбирает reviewer-слот, противоположный продьюсеру.
+4. Reviewer-executor запускается с stage-specific prompt'ом и возвращает строго JSON по схеме review-ответа; при невалидном JSON выполняется один repair-retry.
+5. Распарсенный review публикуется одним атомарным POST'ом через GitHub Pull Request Reviews API: summary в body PR review плюс inline-комментарии на каждую находку с собственным fix-prompt'ом.
+6. Идемпотентность по HTML-маркеру `(reviewer, stage, HEAD-sha)`: повторный запуск review на том же коммите пропускает публикацию и сразу переходит к смене статуса.
+7. После успешной публикации (или idempotent skip) `CoreOrch` переводит задачу в человеческий review-state соответствующей стадии.
+8. При сбое публикации, невалидном JSON после repair или config-mismatch reviewer-слота задача остаётся в AI-review state, monitor подхватит её следующим тиком.
+
 ## Границы Ответственности
 
 - `CoreOrch` координирует сценарий, но не должен содержать детали `git`, `gh`, `codex` или API task tracker-а.
@@ -62,6 +73,8 @@
 - `cmd/orchv3/main.go` запускает orchestration monitor как default runtime без аргументов CLI. Прямой single-run запуск `proposalrunner.Run` по task description из args/stdin удален; непустые args/stdin считаются unsupported manual input.
 - `TaskManager` реализован в `internal/taskmanager`: сервис читает managed Linear tasks, возвращает внутреннюю модель задачи с идентификаторами, описанием, состоянием, комментариями и PR attachment URL, а также выполняет `AddPR` и `MoveTask`.
 - `internal/commandrunner` — это не отдельный доменный актор, а технический адаптер для запуска внешних команд, который уже переиспользуется `AgentExecutor`/будущим `GitManager`.
+- `ReviewRunner` реализован в `internal/reviewrunner` как четвёртая stage-агностичная реализация над `AgentExecutor`-контрактом. Инкапсулирует строгий JSON-парсер review-ответа (`internal/reviewrunner/reviewparse`), формирование PR review (`internal/reviewrunner/prcommenter`) и stage-specific prompt-templates (`internal/reviewrunner/prompts/*.tmpl`). Активируется feature-flag'ом через тройку `LINEAR_STATE_NEED_*_AI_REVIEW_ID` плюс пары reviewer-слотов `REVIEW_ROLE_PRIMARY` / `REVIEW_ROLE_SECONDARY`.
+- `internal/agentmeta` хранит контракт producer-trailer'а в commit message: `Produced-By`, `Produced-Model`, `Produced-Stage`. Используется тремя producer-runner'ами при коммите и `ReviewRunner` при чтении HEAD.
 
 ## Текущее Архитектурное Чтение Репозитория
 

@@ -9,9 +9,11 @@ import (
 	"testing"
 	"time"
 
+	"orchv3/internal/agentmeta"
 	"orchv3/internal/applyrunner"
 	"orchv3/internal/archiverunner"
 	"orchv3/internal/proposalrunner"
+	"orchv3/internal/reviewrunner"
 	"orchv3/internal/taskmanager"
 )
 
@@ -898,4 +900,235 @@ func durationsString(durations []time.Duration) string {
 	}
 
 	return strings.Join(values, ",")
+}
+
+type fakeReviewRunner struct {
+	calls     int
+	lastInput reviewrunner.ReviewInput
+	err       error
+	result    reviewrunner.Result
+}
+
+func (f *fakeReviewRunner) Run(_ context.Context, in reviewrunner.ReviewInput) (reviewrunner.Result, error) {
+	f.calls++
+	f.lastInput = in
+	return f.result, f.err
+}
+
+func aiReviewTask(id, identifier, title, stateID string, pullRequests ...taskmanager.PullRequest) taskmanager.Task {
+	return taskmanager.Task{
+		ID:           id,
+		Identifier:   identifier,
+		Title:        title,
+		State:        taskmanager.WorkflowState{ID: stateID, Name: "AI Review"},
+		PullRequests: pullRequests,
+	}
+}
+
+func aiReviewOrchestrator(taskManager TaskManager, reviewRunner ReviewRunner, aiEnabled bool) Orchestrator {
+	orch := testOrchestratorWithArchive(taskManager, &recordingProposalRunner{}, &recordingApplyRunner{}, &recordingArchiveRunner{}, nil)
+	orch.ReviewRunner = reviewRunner
+	orch.Config.NeedProposalAIReviewStateID = "state-proposal-ai-review"
+	orch.Config.NeedCodeAIReviewStateID = "state-code-ai-review"
+	orch.Config.NeedArchiveAIReviewStateID = "state-archive-ai-review"
+	orch.Config.AIReviewEnabled = aiEnabled
+	return orch
+}
+
+func TestRunRoutesProposalAIReviewToReviewRunnerWhenEnabled(t *testing.T) {
+	taskManager := &recordingTaskManager{
+		tasks: []taskmanager.Task{
+			aiReviewTask("issue-1", "ENG-1", "Proposal AI", "state-proposal-ai-review",
+				taskmanager.PullRequest{URL: "https://github.com/o/r/pull/42", Branch: "feature/p"}),
+		},
+	}
+	rev := &fakeReviewRunner{}
+	orch := aiReviewOrchestrator(taskManager, rev, true)
+
+	if err := orch.RunProposalsOnce(context.Background()); err != nil {
+		t.Fatalf("RunProposalsOnce() returned error: %v", err)
+	}
+	if rev.calls != 1 {
+		t.Fatalf("review calls = %d, want 1", rev.calls)
+	}
+	if rev.lastInput.Stage != agentmeta.StageProposal {
+		t.Fatalf("review stage = %q, want %q", rev.lastInput.Stage, agentmeta.StageProposal)
+	}
+	if rev.lastInput.PRNumber != 42 || rev.lastInput.RepoOwner != "o" || rev.lastInput.RepoName != "r" {
+		t.Fatalf("review input = %#v", rev.lastInput)
+	}
+	if got := strings.Join(taskManager.moveStateIDs, ","); got != "state-proposal-review" {
+		t.Fatalf("MoveTask states = %q, want state-proposal-review", got)
+	}
+}
+
+func TestRunRoutesCodeAIReviewToReviewRunnerWhenEnabled(t *testing.T) {
+	taskManager := &recordingTaskManager{
+		tasks: []taskmanager.Task{
+			aiReviewTask("issue-2", "ENG-2", "Code AI", "state-code-ai-review",
+				taskmanager.PullRequest{URL: "https://github.com/o/r/pull/7", Branch: "feature/c"}),
+		},
+	}
+	rev := &fakeReviewRunner{}
+	orch := aiReviewOrchestrator(taskManager, rev, true)
+
+	if err := orch.RunProposalsOnce(context.Background()); err != nil {
+		t.Fatalf("RunProposalsOnce() returned error: %v", err)
+	}
+	if rev.calls != 1 {
+		t.Fatalf("review calls = %d, want 1", rev.calls)
+	}
+	if rev.lastInput.Stage != agentmeta.StageApply {
+		t.Fatalf("review stage = %q, want %q", rev.lastInput.Stage, agentmeta.StageApply)
+	}
+	if got := strings.Join(taskManager.moveStateIDs, ","); got != "state-code-review" {
+		t.Fatalf("MoveTask states = %q, want state-code-review", got)
+	}
+}
+
+func TestRunRoutesArchiveAIReviewToReviewRunnerWhenEnabled(t *testing.T) {
+	taskManager := &recordingTaskManager{
+		tasks: []taskmanager.Task{
+			aiReviewTask("issue-3", "ENG-3", "Archive AI", "state-archive-ai-review",
+				taskmanager.PullRequest{URL: "https://github.com/o/r/pull/9", Branch: "feature/a"}),
+		},
+	}
+	rev := &fakeReviewRunner{}
+	orch := aiReviewOrchestrator(taskManager, rev, true)
+
+	if err := orch.RunProposalsOnce(context.Background()); err != nil {
+		t.Fatalf("RunProposalsOnce() returned error: %v", err)
+	}
+	if rev.calls != 1 {
+		t.Fatalf("review calls = %d, want 1", rev.calls)
+	}
+	if rev.lastInput.Stage != agentmeta.StageArchive {
+		t.Fatalf("review stage = %q, want %q", rev.lastInput.Stage, agentmeta.StageArchive)
+	}
+	if got := strings.Join(taskManager.moveStateIDs, ","); got != "state-archive-review" {
+		t.Fatalf("MoveTask states = %q, want state-archive-review", got)
+	}
+}
+
+func TestRunSkipsAIReviewWhenFeatureDisabled(t *testing.T) {
+	taskManager := &recordingTaskManager{
+		tasks: []taskmanager.Task{
+			aiReviewTask("issue-1", "ENG-1", "Proposal AI", "state-proposal-ai-review",
+				taskmanager.PullRequest{URL: "https://github.com/o/r/pull/42", Branch: "feature/p"}),
+		},
+	}
+	rev := &fakeReviewRunner{}
+	// AIReviewEnabled=false but state IDs still set: AI-review case must be skipped.
+	orch := aiReviewOrchestrator(taskManager, rev, false)
+
+	if err := orch.RunProposalsOnce(context.Background()); err != nil {
+		t.Fatalf("RunProposalsOnce() returned error: %v", err)
+	}
+	if rev.calls != 0 {
+		t.Fatalf("review calls = %d, want 0", rev.calls)
+	}
+	if len(taskManager.moveTaskIDs) != 0 {
+		t.Fatalf("MoveTask calls = %#v, want none", taskManager.moveTaskIDs)
+	}
+}
+
+func TestProposalRouteMovesToAIReviewStateWhenEnabled(t *testing.T) {
+	taskManager := &recordingTaskManager{
+		tasks: []taskmanager.Task{readyTask("issue-1", "ENG-1", "Proposal")},
+	}
+	proposalRunner := &recordingProposalRunner{urls: []string{"https://github.com/o/r/pull/1"}}
+	rev := &fakeReviewRunner{}
+	orch := testOrchestratorWithArchive(taskManager, proposalRunner, &recordingApplyRunner{}, &recordingArchiveRunner{}, nil)
+	orch.ReviewRunner = rev
+	orch.Config.NeedProposalAIReviewStateID = "state-proposal-ai-review"
+	orch.Config.NeedCodeAIReviewStateID = "state-code-ai-review"
+	orch.Config.NeedArchiveAIReviewStateID = "state-archive-ai-review"
+	orch.Config.AIReviewEnabled = true
+
+	if err := orch.RunProposalsOnce(context.Background()); err != nil {
+		t.Fatalf("RunProposalsOnce() returned error: %v", err)
+	}
+	if got := strings.Join(taskManager.moveStateIDs, ","); got != "state-proposing-progress,state-proposal-ai-review" {
+		t.Fatalf("MoveTask states = %q, want proposing-progress -> proposal-ai-review", got)
+	}
+}
+
+func TestProposalRouteMovesToHumanReviewWhenAIDisabled(t *testing.T) {
+	taskManager := &recordingTaskManager{
+		tasks: []taskmanager.Task{readyTask("issue-1", "ENG-1", "Proposal")},
+	}
+	proposalRunner := &recordingProposalRunner{urls: []string{"https://github.com/o/r/pull/1"}}
+	orch := testOrchestrator(taskManager, proposalRunner, nil)
+	// AIReviewEnabled=false (default) — legacy behaviour preserved.
+
+	if err := orch.RunProposalsOnce(context.Background()); err != nil {
+		t.Fatalf("RunProposalsOnce() returned error: %v", err)
+	}
+	if got := strings.Join(taskManager.moveStateIDs, ","); got != "state-proposing-progress,state-proposal-review" {
+		t.Fatalf("MoveTask states = %q, want proposing-progress -> proposal-review", got)
+	}
+}
+
+func TestApplyRouteMovesToAIReviewStateWhenEnabled(t *testing.T) {
+	taskManager := &recordingTaskManager{
+		tasks: []taskmanager.Task{
+			readyCodeTask("issue-2", "ENG-2", "Apply", taskmanager.PullRequest{URL: "https://github.com/o/r/pull/2"}),
+		},
+	}
+	applyRunner := &recordingApplyRunner{}
+	rev := &fakeReviewRunner{}
+	orch := testOrchestratorWithArchive(taskManager, &recordingProposalRunner{}, applyRunner, &recordingArchiveRunner{}, nil)
+	orch.ReviewRunner = rev
+	orch.Config.NeedProposalAIReviewStateID = "state-proposal-ai-review"
+	orch.Config.NeedCodeAIReviewStateID = "state-code-ai-review"
+	orch.Config.NeedArchiveAIReviewStateID = "state-archive-ai-review"
+	orch.Config.AIReviewEnabled = true
+
+	if err := orch.RunProposalsOnce(context.Background()); err != nil {
+		t.Fatalf("RunProposalsOnce() returned error: %v", err)
+	}
+	if got := strings.Join(taskManager.moveStateIDs, ","); got != "state-code-progress,state-code-ai-review" {
+		t.Fatalf("MoveTask states = %q, want code-progress -> code-ai-review", got)
+	}
+}
+
+func TestArchiveRouteMovesToAIReviewStateWhenEnabled(t *testing.T) {
+	taskManager := &recordingTaskManager{
+		tasks: []taskmanager.Task{
+			readyArchiveTask("issue-3", "ENG-3", "Archive", taskmanager.PullRequest{Branch: "feature/task"}),
+		},
+	}
+	archiveRunner := &recordingArchiveRunner{}
+	rev := &fakeReviewRunner{}
+	orch := testOrchestratorWithArchive(taskManager, &recordingProposalRunner{}, &recordingApplyRunner{}, archiveRunner, nil)
+	orch.ReviewRunner = rev
+	orch.Config.NeedProposalAIReviewStateID = "state-proposal-ai-review"
+	orch.Config.NeedCodeAIReviewStateID = "state-code-ai-review"
+	orch.Config.NeedArchiveAIReviewStateID = "state-archive-ai-review"
+	orch.Config.AIReviewEnabled = true
+
+	if err := orch.RunProposalsOnce(context.Background()); err != nil {
+		t.Fatalf("RunProposalsOnce() returned error: %v", err)
+	}
+	if got := strings.Join(taskManager.moveStateIDs, ","); got != "state-archiving-progress,state-archive-ai-review" {
+		t.Fatalf("MoveTask states = %q, want archiving-progress -> archive-ai-review", got)
+	}
+}
+
+func TestValidateRequiresReviewRunnerWhenAIReviewEnabled(t *testing.T) {
+	taskManager := &recordingTaskManager{}
+	orch := testOrchestrator(taskManager, &recordingProposalRunner{}, nil)
+	orch.Config.AIReviewEnabled = true
+	orch.Config.NeedProposalAIReviewStateID = "state-proposal-ai-review"
+	orch.Config.NeedCodeAIReviewStateID = "state-code-ai-review"
+	orch.Config.NeedArchiveAIReviewStateID = "state-archive-ai-review"
+	// ReviewRunner intentionally nil.
+
+	err := orch.RunProposalsOnce(context.Background())
+	if err == nil {
+		t.Fatal("RunProposalsOnce() error = nil, want non-nil")
+	}
+	if !strings.Contains(err.Error(), "review runner") {
+		t.Fatalf("error = %q, want review runner context", err.Error())
+	}
 }

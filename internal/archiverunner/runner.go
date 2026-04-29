@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"orchv3/internal/agentmeta"
 	"orchv3/internal/commandrunner"
 	"orchv3/internal/config"
 	"orchv3/internal/proposalrunner"
@@ -19,12 +20,13 @@ import (
 const defaultTempPattern = "orchv3-archive-*"
 
 type Runner struct {
-	Config  config.ProposalRunnerConfig
-	Command commandrunner.Runner
-	Agent   AgentExecutor
-	Service string
-	Stdout  io.Writer
-	Stderr  io.Writer
+	Config   config.ProposalRunnerConfig
+	Command  commandrunner.Runner
+	Agent    AgentExecutor
+	Producer agentmeta.Producer
+	Service  string
+	Stdout   io.Writer
+	Stderr   io.Writer
 
 	MkdirTemp func(dir string, pattern string) (string, error)
 	RemoveAll func(path string) error
@@ -147,6 +149,9 @@ func (runner *Runner) Run(ctx context.Context, input ArchiveInput) (err error) {
 	logger.Infof("git", "status:\n%s", strings.TrimRight(status, "\n"))
 
 	commitMessage := BuildCommitMessage(input.Identifier, input.Title)
+	if runner.Producer != (agentmeta.Producer{}) {
+		commitMessage = agentmeta.AppendTrailer(commitMessage, runner.Producer)
+	}
 	for _, gitCommand := range []commandrunner.Command{
 		{Name: runner.Config.GitPath, Args: []string{"add", "-A"}, Dir: cloneDir},
 		{Name: runner.Config.GitPath, Args: []string{"commit", "-m", commitMessage}, Dir: cloneDir},

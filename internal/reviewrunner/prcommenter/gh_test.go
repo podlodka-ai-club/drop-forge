@@ -234,3 +234,72 @@ func TestPostReviewWrapsCommandErrorOnGet(t *testing.T) {
 		t.Errorf("expected error to mention 'check existing review marker', got %v", err)
 	}
 }
+
+func TestPostReviewFallsBackToSummaryOnlyWhen422(t *testing.T) {
+	in := newInput()
+	fr := &fakeRunner{responses: []fakeResp{
+		{stdout: "[]"}, // GET reviews → no existing marker
+		{ // first POST: GitHub rejects inline anchors
+			stderr: `{"message":"Unprocessable Entity","errors":["Path could not be resolved"],"documentation_url":"https://docs.github.com/rest/pulls/reviews#create-a-review-for-a-pull-request","status":"422"}` + "\n" + "gh: Unprocessable Entity (HTTP 422)",
+			err:    errors.New("exit status 1"),
+		},
+		{}, // second POST (summary-only): success
+	}}
+	c := GHPostReviewCommenter{Command: fr, GHPath: "gh"}
+
+	res, err := c.PostReview(context.Background(), in)
+	if err != nil {
+		t.Fatalf("PostReview() returned error: %v", err)
+	}
+	if res.Skipped {
+		t.Fatalf("Skipped = true, want false (review was published via fallback)")
+	}
+	if len(fr.commands) != 3 {
+		t.Fatalf("commands len = %d, want 3 (GET + first POST + fallback POST)", len(fr.commands))
+	}
+
+	// Inspect the fallback POST payload.
+	fallback := fr.commands[2]
+	if fallback.Stdin == nil {
+		t.Fatal("fallback POST has no stdin payload")
+	}
+	body, err := io.ReadAll(fallback.Stdin)
+	if err != nil {
+		t.Fatalf("read fallback stdin: %v", err)
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode fallback payload: %v", err)
+	}
+	comments, _ := payload["comments"].([]interface{})
+	if len(comments) != 0 {
+		t.Fatalf("fallback comments len = %d, want 0", len(comments))
+	}
+	bodyStr, _ := payload["body"].(string)
+	if !strings.Contains(bodyStr, "Inline review comments were rejected") {
+		t.Fatalf("fallback summary missing tripwire:\n%s", bodyStr)
+	}
+}
+
+func TestPostReviewSurfacesNon422POSTErrors(t *testing.T) {
+	in := newInput()
+	fr := &fakeRunner{responses: []fakeResp{
+		{stdout: "[]"},
+		{
+			stderr: "gh: Internal Server Error (HTTP 500)",
+			err:    errors.New("exit status 1"),
+		},
+	}}
+	c := GHPostReviewCommenter{Command: fr, GHPath: "gh"}
+
+	_, err := c.PostReview(context.Background(), in)
+	if err == nil {
+		t.Fatal("expected error for 500, got nil")
+	}
+	if !strings.Contains(err.Error(), "gh api POST review") {
+		t.Fatalf("expected wrapped POST error, got %v", err)
+	}
+	if len(fr.commands) != 2 {
+		t.Fatalf("commands len = %d, want 2 (no fallback for non-422)", len(fr.commands))
+	}
+}

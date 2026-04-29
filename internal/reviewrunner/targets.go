@@ -121,16 +121,25 @@ func walkMarkdownFiles(root string) ([]string, error) {
 }
 
 // budget enforces MaxBytes by truncating Content of later targets and marking
-// them with Truncated=true. When MaxBytes <= 0, returns input unchanged.
+// them with Truncated=true. Every target's Content is also sanitized to valid
+// UTF-8 so the rendered prompt remains valid even when the underlying source
+// (e.g., a git diff carrying binary bytes) is not, and so byte-level truncation
+// never lands in the middle of a multi-byte rune. When MaxBytes <= 0, only the
+// UTF-8 sanitization runs.
 func budget(targets []Target, maxBytes int) []Target {
+	out := make([]Target, 0, len(targets))
 	if maxBytes <= 0 {
-		return targets
+		for _, t := range targets {
+			t.Content = strings.ToValidUTF8(t.Content, "")
+			out = append(out, t)
+		}
+		return out
 	}
 	used := 0
-	out := make([]Target, 0, len(targets))
 	for _, t := range targets {
 		if used+len(t.Content) <= maxBytes {
 			used += len(t.Content)
+			t.Content = strings.ToValidUTF8(t.Content, "")
 			out = append(out, t)
 			continue
 		}
@@ -139,7 +148,8 @@ func budget(targets []Target, maxBytes int) []Target {
 			out = append(out, Target{Path: t.Path, Content: "", Truncated: true})
 			continue
 		}
-		out = append(out, Target{Path: t.Path, Content: t.Content[:remaining], Truncated: true})
+		truncated := strings.ToValidUTF8(t.Content[:remaining], "")
+		out = append(out, Target{Path: t.Path, Content: truncated, Truncated: true})
 		used = maxBytes
 	}
 	return out

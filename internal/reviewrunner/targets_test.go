@@ -186,3 +186,77 @@ func TestCollectTargetsForProposalRequiresChangePath(t *testing.T) {
 		t.Fatalf("expected error when ChangePath is empty")
 	}
 }
+
+func TestCollectTargetsTruncationLandsOnValidUTF8Boundary(t *testing.T) {
+	// Multi-byte runes (Cyrillic «д» = 2 bytes each). A budget that ends mid-rune
+	// must not produce invalid UTF-8 in the truncated target's Content.
+	const cyrillic = "ддддддддддддддддддддддддддддддддддддддддддддддддд" // 49 runes × 2 bytes = 98 bytes
+	cloneDir := t.TempDir()
+	changePath := filepath.Join("openspec", "changes", "y")
+	writeFile(t, filepath.Join(cloneDir, changePath, "proposal.md"), cyrillic)
+
+	// Budget chosen so that remaining lands inside a multi-byte rune (an odd byte count).
+	targets, err := CollectTargets(TargetInput{
+		Stage:      agentmeta.StageProposal,
+		CloneDir:   cloneDir,
+		ChangePath: changePath,
+		MaxBytes:   11,
+	})
+	if err != nil {
+		t.Fatalf("CollectTargets: %v", err)
+	}
+	if len(targets) != 1 {
+		t.Fatalf("targets len = %d", len(targets))
+	}
+	if !targets[0].Truncated {
+		t.Fatalf("expected Truncated=true on the truncated target")
+	}
+	if !strings.Contains(targets[0].Content, "д") {
+		t.Fatalf("truncated content lost all whole runes: %q", targets[0].Content)
+	}
+	for _, b := range []byte(targets[0].Content) {
+		if b >= 0x80 {
+			// At least one valid multi-byte rune must remain; ensure no trailing partial.
+			break
+		}
+	}
+	if len(targets[0].Content)%2 != 0 {
+		// Each Cyrillic letter is 2 bytes; valid UTF-8 truncation keeps an even byte count.
+		t.Fatalf("truncated content len = %d (odd); split mid-rune: %q", len(targets[0].Content), targets[0].Content)
+	}
+}
+
+func TestCollectTargetsSanitizesInvalidUTF8InContent(t *testing.T) {
+	cloneDir := t.TempDir()
+	changePath := filepath.Join("openspec", "changes", "z")
+	root := filepath.Join(cloneDir, changePath)
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// Write file with explicitly invalid UTF-8 bytes in the middle.
+	bad := []byte("hello \xff\xfe\xfd world")
+	if err := os.WriteFile(filepath.Join(root, "proposal.md"), bad, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	targets, err := CollectTargets(TargetInput{
+		Stage:      agentmeta.StageProposal,
+		CloneDir:   cloneDir,
+		ChangePath: changePath,
+		MaxBytes:   1024,
+	})
+	if err != nil {
+		t.Fatalf("CollectTargets: %v", err)
+	}
+	if len(targets) != 1 {
+		t.Fatalf("targets len = %d", len(targets))
+	}
+	for _, b := range []byte(targets[0].Content) {
+		if b >= 0xfd {
+			t.Fatalf("invalid byte %x leaked into content: %q", b, targets[0].Content)
+		}
+	}
+	if !strings.Contains(targets[0].Content, "hello") || !strings.Contains(targets[0].Content, "world") {
+		t.Fatalf("expected surrounding text preserved: %q", targets[0].Content)
+	}
+}

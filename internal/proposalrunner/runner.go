@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"orchv3/internal/agentmeta"
 	"orchv3/internal/commandrunner"
 	"orchv3/internal/config"
 	"orchv3/internal/gitmanager"
@@ -22,13 +23,14 @@ const (
 )
 
 type Runner struct {
-	Config  config.ProposalRunnerConfig
-	Command commandrunner.Runner
-	Agent   AgentExecutor
-	Git     GitManager
-	Service string
-	Stdout  io.Writer
-	Stderr  io.Writer
+	Config   config.ProposalRunnerConfig
+	Command  commandrunner.Runner
+	Agent    AgentExecutor
+	Git      GitManager
+	Producer agentmeta.Producer
+	Service  string
+	Stdout   io.Writer
+	Stderr   io.Writer
 
 	MkdirTemp func(dir string, pattern string) (string, error)
 	RemoveAll func(path string) error
@@ -138,7 +140,11 @@ func (runner *Runner) Run(ctx context.Context, input ProposalInput) (prURL strin
 	if err := git.CheckoutNewBranch(ctx, workspace.CloneDir, branchName); err != nil {
 		return "", err
 	}
-	if err := git.CommitAllAndPush(ctx, workspace.CloneDir, branchName, prTitle, true); err != nil {
+	commitMessage := prTitle
+	if runner.Producer != (agentmeta.Producer{}) {
+		commitMessage = agentmeta.AppendTrailer(prTitle, runner.Producer)
+	}
+	if err := git.CommitAllAndPush(ctx, workspace.CloneDir, branchName, commitMessage, true); err != nil {
 		return "", err
 	}
 

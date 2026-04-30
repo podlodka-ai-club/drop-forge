@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"orchv3/internal/agentmeta"
 	"orchv3/internal/applyrunner"
 	"orchv3/internal/archiverunner"
 	"orchv3/internal/commandrunner"
@@ -16,6 +17,8 @@ import (
 	"orchv3/internal/events"
 	telegramnotifications "orchv3/internal/notifications/telegram"
 	"orchv3/internal/proposalrunner"
+	"orchv3/internal/reviewrunner"
+	"orchv3/internal/reviewrunner/prcommenter"
 	"orchv3/internal/steplog"
 	"orchv3/internal/taskmanager"
 )
@@ -32,6 +35,10 @@ type singleArchiveRunner interface {
 	Run(ctx context.Context, input archiverunner.ArchiveInput) error
 }
 
+type singleReviewRunner interface {
+	Run(ctx context.Context, input reviewrunner.ReviewInput) (reviewrunner.Result, error)
+}
+
 type proposalMonitor interface {
 	RunProposalsLoop(ctx context.Context, interval time.Duration) error
 }
@@ -39,12 +46,13 @@ type proposalMonitor interface {
 type appDeps struct {
 	loadConfig              func() (config.Config, error)
 	buildLogger             func(stderr io.Writer, cfg config.Config, warnOut io.Writer) (steplog.Logger, io.Writer, io.Closer, error)
-	newProposalRunner       func(cfg config.ProposalRunnerConfig, service string, logOut io.Writer) singleProposalRunner
-	newApplyRunner          func(cfg config.ProposalRunnerConfig, service string, logOut io.Writer) singleApplyRunner
-	newArchiveRunner        func(cfg config.ProposalRunnerConfig, service string, logOut io.Writer) singleArchiveRunner
+	newProposalRunner       func(cfg config.Config, logOut io.Writer) singleProposalRunner
+	newApplyRunner          func(cfg config.Config, logOut io.Writer) singleApplyRunner
+	newArchiveRunner        func(cfg config.Config, logOut io.Writer) singleArchiveRunner
+	newReviewRunner         func(cfg config.Config, logOut io.Writer) singleReviewRunner
 	newEventPublisher       func(telegramCfg config.TelegramConfig, taskManagerCfg config.LinearTaskManagerConfig, logOut io.Writer) (events.Publisher, error)
 	newTaskManager          func(cfg config.LinearTaskManagerConfig, logOut io.Writer, publisher events.Publisher) coreorch.TaskManager
-	newProposalOrchestrator func(cfg config.Config, tasks coreorch.TaskManager, proposalRunner coreorch.ProposalRunner, applyRunner coreorch.ApplyRunner, archiveRunner coreorch.ArchiveRunner, logOut io.Writer) proposalMonitor
+	newProposalOrchestrator func(cfg config.Config, tasks coreorch.TaskManager, proposalRunner coreorch.ProposalRunner, applyRunner coreorch.ApplyRunner, archiveRunner coreorch.ArchiveRunner, reviewRunner coreorch.ReviewRunner, logOut io.Writer) proposalMonitor
 }
 
 func main() {
@@ -85,10 +93,21 @@ func runWithDeps(args []string, stdin *os.File, stdout io.Writer, stderr io.Writ
 	}
 
 	taskManager := deps.newTaskManager(cfg.TaskManager, logOut, publisher)
-	proposalRunner := deps.newProposalRunner(cfg.ProposalRunner, cfg.AppName, logOut)
-	applyRunner := deps.newApplyRunner(cfg.ProposalRunner, cfg.AppName, logOut)
-	archiveRunner := deps.newArchiveRunner(cfg.ProposalRunner, cfg.AppName, logOut)
-	orchestrator := deps.newProposalOrchestrator(cfg, taskManager, proposalRunner, applyRunner, archiveRunner, logOut)
+	proposalRunner := deps.newProposalRunner(cfg, logOut)
+	applyRunner := deps.newApplyRunner(cfg, logOut)
+	archiveRunner := deps.newArchiveRunner(cfg, logOut)
+	reviewRunnerSingle := deps.newReviewRunner(cfg, logOut)
+
+	// Keep the orchestrator's interface field nil-valued when the factory
+	// returned no review runner; assigning a typed-nil singleReviewRunner to
+	// coreorch.ReviewRunner would produce a non-nil interface holding a nil
+	// pointer, defeating the orchestrator's nil check.
+	var reviewRunner coreorch.ReviewRunner
+	if reviewRunnerSingle != nil {
+		reviewRunner = reviewRunnerSingle
+	}
+
+	orchestrator := deps.newProposalOrchestrator(cfg, taskManager, proposalRunner, applyRunner, archiveRunner, reviewRunner, logOut)
 	logger.Infof(
 		"cli",
 		"%s starting orchestration monitor in %s on port %d interval=%s",
@@ -134,29 +153,93 @@ func defaultDeps() appDeps {
 	return appDeps{
 		loadConfig:  config.Load,
 		buildLogger: buildLogger,
-		newProposalRunner: func(cfg config.ProposalRunnerConfig, service string, logOut io.Writer) singleProposalRunner {
-			runner := proposalrunner.New(cfg)
-			runner.Service = service
+		newProposalRunner: func(cfg config.Config, logOut io.Writer) singleProposalRunner {
+			runner := proposalrunner.New(cfg.ProposalRunner)
+			runner.Service = cfg.AppName
 			runner.Stdout = logOut
 			runner.Stderr = logOut
 			runner.Command = commandrunner.ExecRunner{LogWriter: logOut}
+			if cfg.Review.PrimarySlot != "" {
+				runner.Producer = agentmeta.Producer{
+					By:    cfg.Review.PrimarySlot,
+					Model: cfg.Review.PrimaryModel,
+					Stage: agentmeta.StageProposal,
+				}
+			}
 			return runner
 		},
-		newApplyRunner: func(cfg config.ProposalRunnerConfig, service string, logOut io.Writer) singleApplyRunner {
-			runner := applyrunner.New(cfg)
-			runner.Service = service
+		newApplyRunner: func(cfg config.Config, logOut io.Writer) singleApplyRunner {
+			runner := applyrunner.New(cfg.ProposalRunner)
+			runner.Service = cfg.AppName
 			runner.Stdout = logOut
 			runner.Stderr = logOut
 			runner.Command = commandrunner.ExecRunner{LogWriter: logOut}
+			if cfg.Review.PrimarySlot != "" {
+				runner.Producer = agentmeta.Producer{
+					By:    cfg.Review.PrimarySlot,
+					Model: cfg.Review.PrimaryModel,
+					Stage: agentmeta.StageApply,
+				}
+			}
 			return runner
 		},
-		newArchiveRunner: func(cfg config.ProposalRunnerConfig, service string, logOut io.Writer) singleArchiveRunner {
-			runner := archiverunner.New(cfg)
-			runner.Service = service
+		newArchiveRunner: func(cfg config.Config, logOut io.Writer) singleArchiveRunner {
+			runner := archiverunner.New(cfg.ProposalRunner)
+			runner.Service = cfg.AppName
 			runner.Stdout = logOut
 			runner.Stderr = logOut
 			runner.Command = commandrunner.ExecRunner{LogWriter: logOut}
+			if cfg.Review.PrimarySlot != "" {
+				runner.Producer = agentmeta.Producer{
+					By:    cfg.Review.PrimarySlot,
+					Model: cfg.Review.PrimaryModel,
+					Stage: agentmeta.StageArchive,
+				}
+			}
 			return runner
+		},
+		newReviewRunner: func(cfg config.Config, logOut io.Writer) singleReviewRunner {
+			if !cfg.Review.Enabled(cfg.TaskManager) {
+				return nil
+			}
+			cmd := commandrunner.ExecRunner{LogWriter: logOut}
+			// When PrimarySlot == SecondarySlot (single-Codex deployment), the
+			// map collapses to one entry. SelectReviewer still routes correctly
+			// because the slot key is shared; the secondary model/path silently
+			// overwrites the primary in the map. Once a true second agent is
+			// registered (e.g., Claude), the slots will differ and the map will
+			// hold two distinct executors.
+			executors := map[string]reviewrunner.AgentExecutor{
+				cfg.Review.PrimarySlot: reviewrunner.CodexCLIExecutor{
+					Command:   cmd,
+					CodexPath: cfg.Review.PrimaryExecutorPath,
+					Model:     cfg.Review.PrimaryModel,
+					Service:   cfg.AppName,
+				},
+				cfg.Review.SecondarySlot: reviewrunner.CodexCLIExecutor{
+					Command:   cmd,
+					CodexPath: cfg.Review.SecondaryExecutorPath,
+					Model:     cfg.Review.SecondaryModel,
+					Service:   cfg.AppName,
+				},
+			}
+			commenter := prcommenter.GHPostReviewCommenter{
+				Command: cmd,
+				GHPath:  cfg.ProposalRunner.GHPath,
+				Service: cfg.AppName,
+				Stdout:  logOut,
+				Stderr:  logOut,
+			}
+			return &reviewrunner.Runner{
+				Config:      cfg.Review,
+				ProposalCfg: cfg.ProposalRunner,
+				Command:     cmd,
+				Executors:   executors,
+				Commenter:   commenter,
+				Service:     cfg.AppName,
+				Stdout:      logOut,
+				Stderr:      logOut,
+			}
 		},
 		newEventPublisher: buildEventPublisher,
 		newTaskManager: func(cfg config.LinearTaskManagerConfig, logOut io.Writer, publisher events.Publisher) coreorch.TaskManager {
@@ -165,23 +248,28 @@ func defaultDeps() appDeps {
 			manager.Publisher = publisher
 			return manager
 		},
-		newProposalOrchestrator: func(cfg config.Config, tasks coreorch.TaskManager, proposalRunner coreorch.ProposalRunner, applyRunner coreorch.ApplyRunner, archiveRunner coreorch.ArchiveRunner, logOut io.Writer) proposalMonitor {
+		newProposalOrchestrator: func(cfg config.Config, tasks coreorch.TaskManager, proposalRunner coreorch.ProposalRunner, applyRunner coreorch.ApplyRunner, archiveRunner coreorch.ArchiveRunner, reviewRunner coreorch.ReviewRunner, logOut io.Writer) proposalMonitor {
 			return &coreorch.Orchestrator{
 				Config: coreorch.Config{
-					ReadyToProposeStateID:      cfg.TaskManager.ReadyToProposeStateID,
-					ProposingInProgressStateID: cfg.TaskManager.ProposingInProgressStateID,
-					NeedProposalReviewStateID:  cfg.TaskManager.NeedProposalReviewStateID,
-					ReadyToCodeStateID:         cfg.TaskManager.ReadyToCodeStateID,
-					CodeInProgressStateID:      cfg.TaskManager.CodeInProgressStateID,
-					NeedCodeReviewStateID:      cfg.TaskManager.NeedCodeReviewStateID,
-					ReadyToArchiveStateID:      cfg.TaskManager.ReadyToArchiveStateID,
-					ArchivingInProgressStateID: cfg.TaskManager.ArchivingInProgressStateID,
-					NeedArchiveReviewStateID:   cfg.TaskManager.NeedArchiveReviewStateID,
+					ReadyToProposeStateID:       cfg.TaskManager.ReadyToProposeStateID,
+					ProposingInProgressStateID:  cfg.TaskManager.ProposingInProgressStateID,
+					NeedProposalReviewStateID:   cfg.TaskManager.NeedProposalReviewStateID,
+					NeedProposalAIReviewStateID: cfg.TaskManager.NeedProposalAIReviewStateID,
+					ReadyToCodeStateID:          cfg.TaskManager.ReadyToCodeStateID,
+					CodeInProgressStateID:       cfg.TaskManager.CodeInProgressStateID,
+					NeedCodeReviewStateID:       cfg.TaskManager.NeedCodeReviewStateID,
+					NeedCodeAIReviewStateID:     cfg.TaskManager.NeedCodeAIReviewStateID,
+					ReadyToArchiveStateID:       cfg.TaskManager.ReadyToArchiveStateID,
+					ArchivingInProgressStateID:  cfg.TaskManager.ArchivingInProgressStateID,
+					NeedArchiveReviewStateID:    cfg.TaskManager.NeedArchiveReviewStateID,
+					NeedArchiveAIReviewStateID:  cfg.TaskManager.NeedArchiveAIReviewStateID,
+					AIReviewEnabled:             cfg.Review.Enabled(cfg.TaskManager),
 				},
 				TaskManager:    tasks,
 				ProposalRunner: proposalRunner,
 				ApplyRunner:    applyRunner,
 				ArchiveRunner:  archiveRunner,
+				ReviewRunner:   reviewRunner,
 				Service:        cfg.AppName,
 				LogWriter:      logOut,
 			}

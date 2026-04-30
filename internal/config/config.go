@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -30,6 +31,9 @@ const (
 	defaultLogstashBufferSize   = 1024
 	defaultLogstashDialTimeout  = 2 * time.Second
 	defaultProposalPollInterval = 30 * time.Second
+
+	defaultReviewMaxContextBytes    = 256 * 1024
+	defaultReviewParseRepairRetries = 1
 )
 
 type Config struct {
@@ -41,6 +45,7 @@ type Config struct {
 	ProposalPollInterval time.Duration
 	ProposalRunner       ProposalRunnerConfig
 	TaskManager          LinearTaskManagerConfig
+	Review               ReviewRunnerConfig
 	Telegram             TelegramConfig
 	Logstash             LogstashConfig
 }
@@ -64,18 +69,33 @@ type ProposalRunnerConfig struct {
 }
 
 type LinearTaskManagerConfig struct {
-	APIURL                     string
-	APIToken                   string
-	ProjectID                  string
-	ReadyToProposeStateID      string
-	ReadyToCodeStateID         string
-	ReadyToArchiveStateID      string
-	ProposingInProgressStateID string
-	CodeInProgressStateID      string
-	ArchivingInProgressStateID string
-	NeedProposalReviewStateID  string
-	NeedCodeReviewStateID      string
-	NeedArchiveReviewStateID   string
+	APIURL                      string
+	APIToken                    string
+	ProjectID                   string
+	ReadyToProposeStateID       string
+	ReadyToCodeStateID          string
+	ReadyToArchiveStateID       string
+	ProposingInProgressStateID  string
+	CodeInProgressStateID       string
+	ArchivingInProgressStateID  string
+	NeedProposalReviewStateID   string
+	NeedCodeReviewStateID       string
+	NeedArchiveReviewStateID    string
+	NeedProposalAIReviewStateID string
+	NeedCodeAIReviewStateID     string
+	NeedArchiveAIReviewStateID  string
+}
+
+type ReviewRunnerConfig struct {
+	PrimarySlot           string
+	SecondarySlot         string
+	PrimaryModel          string
+	SecondaryModel        string
+	PrimaryExecutorPath   string
+	SecondaryExecutorPath string
+	MaxContextBytes       int
+	ParseRepairRetries    int
+	PromptDir             string
 }
 
 type TelegramConfig struct {
@@ -111,6 +131,16 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 
+	reviewMaxContextBytes, err := intFromEnv("REVIEW_MAX_CONTEXT_BYTES", defaultReviewMaxContextBytes)
+	if err != nil {
+		return Config{}, err
+	}
+
+	reviewParseRepairRetries, err := intFromEnv("REVIEW_PARSE_REPAIR_RETRIES", defaultReviewParseRepairRetries)
+	if err != nil {
+		return Config{}, err
+	}
+
 	telegramCfg, err := loadTelegramConfig()
 	if err != nil {
 		return Config{}, err
@@ -135,18 +165,32 @@ func Load() (Config, error) {
 			GHPath:        trimmedStringFromEnv("PROPOSAL_GH_PATH", defaultProposalGHPath),
 		},
 		TaskManager: LinearTaskManagerConfig{
-			APIURL:                     trimmedStringFromEnv("LINEAR_API_URL", defaultLinearAPIURL),
-			APIToken:                   trimmedStringFromEnv("LINEAR_API_TOKEN", ""),
-			ProjectID:                  trimmedStringFromEnv("LINEAR_PROJECT_ID", ""),
-			ReadyToProposeStateID:      trimmedStringFromEnv("LINEAR_STATE_READY_TO_PROPOSE_ID", ""),
-			ReadyToCodeStateID:         trimmedStringFromEnv("LINEAR_STATE_READY_TO_CODE_ID", ""),
-			ReadyToArchiveStateID:      trimmedStringFromEnv("LINEAR_STATE_READY_TO_ARCHIVE_ID", ""),
-			ProposingInProgressStateID: trimmedStringFromEnv("LINEAR_STATE_PROPOSING_IN_PROGRESS_ID", ""),
-			CodeInProgressStateID:      trimmedStringFromEnv("LINEAR_STATE_CODE_IN_PROGRESS_ID", ""),
-			ArchivingInProgressStateID: trimmedStringFromEnv("LINEAR_STATE_ARCHIVING_IN_PROGRESS_ID", ""),
-			NeedProposalReviewStateID:  trimmedStringFromEnv("LINEAR_STATE_NEED_PROPOSAL_REVIEW_ID", ""),
-			NeedCodeReviewStateID:      trimmedStringFromEnv("LINEAR_STATE_NEED_CODE_REVIEW_ID", ""),
-			NeedArchiveReviewStateID:   trimmedStringFromEnv("LINEAR_STATE_NEED_ARCHIVE_REVIEW_ID", ""),
+			APIURL:                      trimmedStringFromEnv("LINEAR_API_URL", defaultLinearAPIURL),
+			APIToken:                    trimmedStringFromEnv("LINEAR_API_TOKEN", ""),
+			ProjectID:                   trimmedStringFromEnv("LINEAR_PROJECT_ID", ""),
+			ReadyToProposeStateID:       trimmedStringFromEnv("LINEAR_STATE_READY_TO_PROPOSE_ID", ""),
+			ReadyToCodeStateID:          trimmedStringFromEnv("LINEAR_STATE_READY_TO_CODE_ID", ""),
+			ReadyToArchiveStateID:       trimmedStringFromEnv("LINEAR_STATE_READY_TO_ARCHIVE_ID", ""),
+			ProposingInProgressStateID:  trimmedStringFromEnv("LINEAR_STATE_PROPOSING_IN_PROGRESS_ID", ""),
+			CodeInProgressStateID:       trimmedStringFromEnv("LINEAR_STATE_CODE_IN_PROGRESS_ID", ""),
+			ArchivingInProgressStateID:  trimmedStringFromEnv("LINEAR_STATE_ARCHIVING_IN_PROGRESS_ID", ""),
+			NeedProposalReviewStateID:   trimmedStringFromEnv("LINEAR_STATE_NEED_PROPOSAL_REVIEW_ID", ""),
+			NeedCodeReviewStateID:       trimmedStringFromEnv("LINEAR_STATE_NEED_CODE_REVIEW_ID", ""),
+			NeedArchiveReviewStateID:    trimmedStringFromEnv("LINEAR_STATE_NEED_ARCHIVE_REVIEW_ID", ""),
+			NeedProposalAIReviewStateID: trimmedStringFromEnv("LINEAR_STATE_NEED_PROPOSAL_AI_REVIEW_ID", ""),
+			NeedCodeAIReviewStateID:     trimmedStringFromEnv("LINEAR_STATE_NEED_CODE_AI_REVIEW_ID", ""),
+			NeedArchiveAIReviewStateID:  trimmedStringFromEnv("LINEAR_STATE_NEED_ARCHIVE_AI_REVIEW_ID", ""),
+		},
+		Review: ReviewRunnerConfig{
+			PrimarySlot:           trimmedStringFromEnv("REVIEW_ROLE_PRIMARY", ""),
+			SecondarySlot:         trimmedStringFromEnv("REVIEW_ROLE_SECONDARY", ""),
+			PrimaryModel:          trimmedStringFromEnv("REVIEW_PRIMARY_MODEL", ""),
+			SecondaryModel:        trimmedStringFromEnv("REVIEW_SECONDARY_MODEL", ""),
+			PrimaryExecutorPath:   trimmedStringFromEnv("REVIEW_PRIMARY_EXECUTOR_PATH", ""),
+			SecondaryExecutorPath: trimmedStringFromEnv("REVIEW_SECONDARY_EXECUTOR_PATH", ""),
+			MaxContextBytes:       reviewMaxContextBytes,
+			ParseRepairRetries:    reviewParseRepairRetries,
+			PromptDir:             trimmedStringFromEnv("REVIEW_PROMPT_DIR", ""),
 		},
 		Telegram: telegramCfg,
 		Logstash: logstashCfg,
@@ -271,6 +315,28 @@ func (cfg LinearTaskManagerConfig) Validate() error {
 		}
 	}
 
+	aiStates := map[string]string{
+		"LINEAR_STATE_NEED_PROPOSAL_AI_REVIEW_ID": cfg.NeedProposalAIReviewStateID,
+		"LINEAR_STATE_NEED_CODE_AI_REVIEW_ID":     cfg.NeedCodeAIReviewStateID,
+		"LINEAR_STATE_NEED_ARCHIVE_AI_REVIEW_ID":  cfg.NeedArchiveAIReviewStateID,
+	}
+	emptyAI := 0
+	for _, v := range aiStates {
+		if strings.TrimSpace(v) == "" {
+			emptyAI++
+		}
+	}
+	if emptyAI != 0 && emptyAI != len(aiStates) {
+		var missing []string
+		for k, v := range aiStates {
+			if strings.TrimSpace(v) == "" {
+				missing = append(missing, k)
+			}
+		}
+		sort.Strings(missing)
+		return fmt.Errorf("AI review configuration is partial; set all three or none. Missing: %s", strings.Join(missing, ", "))
+	}
+
 	return nil
 }
 
@@ -302,6 +368,9 @@ func (cfg LinearTaskManagerConfig) ManagedStateIDs() []string {
 		strings.TrimSpace(cfg.ReadyToProposeStateID),
 		strings.TrimSpace(cfg.ReadyToCodeStateID),
 		strings.TrimSpace(cfg.ReadyToArchiveStateID),
+		strings.TrimSpace(cfg.NeedProposalAIReviewStateID),
+		strings.TrimSpace(cfg.NeedCodeAIReviewStateID),
+		strings.TrimSpace(cfg.NeedArchiveAIReviewStateID),
 	}
 
 	result := make([]string, 0, len(states))
@@ -318,6 +387,26 @@ func (cfg LinearTaskManagerConfig) ManagedStateIDs() []string {
 	}
 
 	return result
+}
+
+func (cfg ReviewRunnerConfig) Enabled(tm LinearTaskManagerConfig) bool {
+	required := []string{
+		tm.NeedProposalAIReviewStateID,
+		tm.NeedCodeAIReviewStateID,
+		tm.NeedArchiveAIReviewStateID,
+		cfg.PrimarySlot,
+		cfg.SecondarySlot,
+		cfg.PrimaryModel,
+		cfg.SecondaryModel,
+		cfg.PrimaryExecutorPath,
+		cfg.SecondaryExecutorPath,
+	}
+	for _, v := range required {
+		if strings.TrimSpace(v) == "" {
+			return false
+		}
+	}
+	return true
 }
 
 func loadDotEnv() error {

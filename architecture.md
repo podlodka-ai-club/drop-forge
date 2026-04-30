@@ -50,6 +50,17 @@
 7. После успешного push `CoreOrch` переводит задачу в `Need Archive Review`, передавая task identifier/title и PR URL или branch в контекст события.
 8. Успешные переходы статусов публикуют `task.status_changed`; подключенные подписчики обрабатывают событие синхронно и best-effort.
 
+## Целевой Поток Review-Stage
+
+1. `CoreOrch` в том же проходе monitor-а получает managed tasks от `TaskManager`.
+2. Задачи в `Need * AI Review` (Proposal/Code/Archive) маршрутизируются в Review-stage соответствующего этапа.
+3. `ReviewRunner` клонирует ветку задачи во временную директорию, читает producer-trailer последнего HEAD-коммита и выбирает reviewer-слот, противоположный продьюсеру.
+4. Reviewer-executor запускается с stage-specific prompt'ом и возвращает строго JSON по схеме review-ответа; при невалидном JSON выполняется один repair-retry.
+5. Распарсенный review публикуется одним атомарным POST'ом через GitHub Pull Request Reviews API: summary в body PR review плюс inline-комментарии на каждую находку с собственным fix-prompt'ом.
+6. Идемпотентность по HTML-маркеру `(reviewer, stage, HEAD-sha)`: повторный запуск review на том же коммите пропускает публикацию и сразу переходит к смене статуса.
+7. После успешной публикации (или idempotent skip) `CoreOrch` переводит задачу в человеческий review-state соответствующей стадии.
+8. При сбое публикации, невалидном JSON после repair или config-mismatch reviewer-слота задача остаётся в AI-review state, monitor подхватит её следующим тиком.
+
 ## Границы Ответственности
 
 - `CoreOrch` координирует сценарий, но не должен содержать детали `git`, `gh`, `codex` или API task tracker-а.
@@ -72,6 +83,8 @@
 - `cmd/orchv3/main.go` запускает orchestration monitor как default runtime без аргументов CLI. При старте он создает локальный dispatcher, регистрирует Telegram subscriber только при `TELEGRAM_NOTIFICATIONS_ENABLED=true` и передает publisher в `TaskManager`. Прямой single-run запуск `proposalrunner.Run` по task description из args/stdin удален; непустые args/stdin считаются unsupported manual input.
 - `TaskManager` реализован в `internal/taskmanager`: сервис читает managed Linear tasks, возвращает внутреннюю модель задачи с идентификаторами, описанием, состоянием, комментариями и PR attachment URL/branch, а также выполняет `AddPR`, `MoveTask` и расширенный move с context snapshot. После успешного move он публикует `task.status_changed`; ошибка публикации логируется и не меняет результат уже выполненного перехода в Linear.
 - `internal/commandrunner` — это не отдельный доменный актор, а технический адаптер для запуска внешних команд, который переиспользуется `AgentExecutor` и `GitManager`.
+- `ReviewRunner` реализован в `internal/reviewrunner` как четвёртая stage-агностичная реализация над `AgentExecutor`-контрактом. Инкапсулирует строгий JSON-парсер review-ответа (`internal/reviewrunner/reviewparse`), формирование PR review (`internal/reviewrunner/prcommenter`) и stage-specific prompt-templates (`internal/reviewrunner/prompts/*.tmpl`). Активируется feature-flag'ом через тройку `LINEAR_STATE_NEED_*_AI_REVIEW_ID` плюс пары reviewer-слотов `REVIEW_ROLE_PRIMARY` / `REVIEW_ROLE_SECONDARY`.
+- `internal/agentmeta` хранит контракт producer-trailer'а в commit message: `Produced-By`, `Produced-Model`, `Produced-Stage`. Используется тремя producer-runner'ами при коммите и `ReviewRunner` при чтении HEAD.
 
 ## Текущее Архитектурное Чтение Репозитория
 

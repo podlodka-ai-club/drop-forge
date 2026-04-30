@@ -41,6 +41,43 @@ func TestManagerGetTasksLogsProjectAndStateContext(t *testing.T) {
 	assertTaskManagerLog(t, events, "taskmanager", "loaded 1 managed tasks for project project-123")
 }
 
+func TestGetTasksIncludesAIReviewStateIDsWhenConfigured(t *testing.T) {
+	cfg := validConfig()
+	cfg.NeedProposalAIReviewStateID = "state-proposal-ai-review"
+	cfg.NeedCodeAIReviewStateID = "state-code-ai-review"
+	cfg.NeedArchiveAIReviewStateID = "state-archive-ai-review"
+
+	fake := &recordingClient{}
+	manager := &Manager{
+		Config: cfg,
+		Client: fake,
+	}
+
+	if _, err := manager.GetTasks(context.Background()); err != nil {
+		t.Fatalf("GetTasks() returned error: %v", err)
+	}
+
+	wantAIStates := []string{
+		cfg.NeedProposalAIReviewStateID,
+		cfg.NeedCodeAIReviewStateID,
+		cfg.NeedArchiveAIReviewStateID,
+	}
+	for _, want := range wantAIStates {
+		if !containsString(fake.getTasksStateIDs, want) {
+			t.Fatalf("GetTasks stateIDs = %v, missing AI-review state %q", fake.getTasksStateIDs, want)
+		}
+	}
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
 func TestManagerMoveTaskWrapsErrorAndLogs(t *testing.T) {
 	var logs bytes.Buffer
 	manager := &Manager{
@@ -336,8 +373,9 @@ func (client fakeClient) AddPR(ctx context.Context, taskID string, prURL string)
 }
 
 type recordingClient struct {
-	moveTaskID  string
-	moveStateID string
+	moveTaskID       string
+	moveStateID      string
+	getTasksStateIDs []string
 }
 
 type recordingPublisher struct {
@@ -355,6 +393,7 @@ func (publisher *recordingPublisher) Publish(ctx context.Context, event events.E
 }
 
 func (client *recordingClient) GetTasks(ctx context.Context, projectID string, stateIDs []string) ([]Task, error) {
+	client.getTasksStateIDs = append([]string(nil), stateIDs...)
 	return nil, nil
 }
 

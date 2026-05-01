@@ -65,21 +65,22 @@ func run(args []string, stdin *os.File, stdout io.Writer, stderr io.Writer) int 
 
 func runWithDeps(args []string, stdin *os.File, stdout io.Writer, stderr io.Writer, deps appDeps) int {
 	_ = stdout
+	earlyLogger := steplog.New(consoleLogWriter(stderr, isTerminalWriter))
 
 	if err := rejectManualProposalInput(args, stdin); err != nil {
-		steplog.New(stderr).Errorf("cli", "%v", err)
+		earlyLogger.Errorf("cli", "%v", err)
 		return 1
 	}
 
 	cfg, err := deps.loadConfig()
 	if err != nil {
-		steplog.New(stderr).Errorf("cli", "load config: %v", err)
+		earlyLogger.Errorf("cli", "load config: %v", err)
 		return 1
 	}
 
 	logger, logOut, closer, err := deps.buildLogger(stderr, cfg, os.Stderr)
 	if err != nil {
-		steplog.New(stderr).Errorf("cli", "build logger: %v", err)
+		earlyLogger.Errorf("cli", "build logger: %v", err)
 		return 1
 	}
 	if closer != nil {

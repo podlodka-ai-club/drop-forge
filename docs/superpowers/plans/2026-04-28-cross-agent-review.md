@@ -850,7 +850,6 @@ type Config struct {
 	AppName              string
 	LogLevel             string
 	HTTPPort             int
-	OpenAIAPIKey         string
 	ProposalPollInterval time.Duration
 	ProposalRunner       ProposalRunnerConfig
 	TaskManager          LinearTaskManagerConfig

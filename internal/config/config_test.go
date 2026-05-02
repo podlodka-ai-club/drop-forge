@@ -35,9 +35,26 @@ var envKeys = []string{
 	"LINEAR_STATE_NEED_PROPOSAL_REVIEW_ID",
 	"LINEAR_STATE_NEED_CODE_REVIEW_ID",
 	"LINEAR_STATE_NEED_ARCHIVE_REVIEW_ID",
+	"LINEAR_STATE_NEED_PROPOSAL_AI_REVIEW_ID",
+	"LINEAR_STATE_NEED_CODE_AI_REVIEW_ID",
+	"LINEAR_STATE_NEED_ARCHIVE_AI_REVIEW_ID",
+	"REVIEW_ROLE_PRIMARY",
+	"REVIEW_ROLE_SECONDARY",
+	"REVIEW_PRIMARY_MODEL",
+	"REVIEW_SECONDARY_MODEL",
+	"REVIEW_PRIMARY_EXECUTOR_PATH",
+	"REVIEW_SECONDARY_EXECUTOR_PATH",
+	"REVIEW_MAX_CONTEXT_BYTES",
+	"REVIEW_PARSE_REPAIR_RETRIES",
+	"REVIEW_PROMPT_DIR",
 	"LOGSTASH_ADDR",
 	"LOGSTASH_BUFFER_SIZE",
 	"LOGSTASH_DIAL_TIMEOUT",
+	"TELEGRAM_NOTIFICATIONS_ENABLED",
+	"TELEGRAM_BOT_TOKEN",
+	"TELEGRAM_CHAT_ID",
+	"TELEGRAM_API_URL",
+	"TELEGRAM_TIMEOUT",
 }
 
 func TestLoadUsesDefaults(t *testing.T) {
@@ -90,6 +107,12 @@ func TestLoadUsesDefaults(t *testing.T) {
 	}
 	if cfg.Logstash.DialTimeout != defaultLogstashDialTimeout {
 		t.Fatalf("Logstash.DialTimeout = %v, want %v", cfg.Logstash.DialTimeout, defaultLogstashDialTimeout)
+	}
+	if cfg.Telegram.Enabled {
+		t.Fatal("Telegram.Enabled = true, want false by default")
+	}
+	if cfg.Telegram.BotToken != "" || cfg.Telegram.ChatID != "" || cfg.Telegram.APIURL != "" || cfg.Telegram.Timeout != 0 {
+		t.Fatalf("Telegram config = %#v, want empty when disabled", cfg.Telegram)
 	}
 }
 
@@ -173,6 +196,11 @@ func TestLoadReadsEnvironment(t *testing.T) {
 	t.Setenv("LINEAR_STATE_NEED_PROPOSAL_REVIEW_ID", "state-proposal-review")
 	t.Setenv("LINEAR_STATE_NEED_CODE_REVIEW_ID", "state-code-review")
 	t.Setenv("LINEAR_STATE_NEED_ARCHIVE_REVIEW_ID", "state-archive-review")
+	t.Setenv("TELEGRAM_NOTIFICATIONS_ENABLED", "true")
+	t.Setenv("TELEGRAM_BOT_TOKEN", "bot-token")
+	t.Setenv("TELEGRAM_CHAT_ID", "chat-123")
+	t.Setenv("TELEGRAM_API_URL", "https://api.telegram.example/")
+	t.Setenv("TELEGRAM_TIMEOUT", "3s")
 
 	cfg, err := Load()
 	if err != nil {
@@ -264,6 +292,107 @@ func TestLoadReadsEnvironment(t *testing.T) {
 	}
 	if taskManagerCfg.NeedArchiveReviewStateID != "state-archive-review" {
 		t.Fatalf("NeedArchiveReviewStateID = %q", taskManagerCfg.NeedArchiveReviewStateID)
+	}
+
+	if !cfg.Telegram.Enabled {
+		t.Fatal("Telegram.Enabled = false, want true")
+	}
+	if cfg.Telegram.BotToken != "bot-token" {
+		t.Fatalf("Telegram.BotToken = %q", cfg.Telegram.BotToken)
+	}
+	if cfg.Telegram.ChatID != "chat-123" {
+		t.Fatalf("Telegram.ChatID = %q", cfg.Telegram.ChatID)
+	}
+	if cfg.Telegram.APIURL != "https://api.telegram.example" {
+		t.Fatalf("Telegram.APIURL = %q", cfg.Telegram.APIURL)
+	}
+	if cfg.Telegram.Timeout != 3*time.Second {
+		t.Fatalf("Telegram.Timeout = %v", cfg.Telegram.Timeout)
+	}
+}
+
+func TestLoadTelegramDisabledDoesNotRequireDeliverySettings(t *testing.T) {
+	isolateEnv(t)
+	t.Setenv("TELEGRAM_NOTIFICATIONS_ENABLED", "false")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned error: %v", err)
+	}
+
+	if cfg.Telegram.Enabled {
+		t.Fatal("Telegram.Enabled = true, want false")
+	}
+}
+
+func TestLoadTelegramEnabledRequiresDeliverySettings(t *testing.T) {
+	tests := []struct {
+		name    string
+		setup   func(t *testing.T)
+		wantErr string
+	}{
+		{
+			name: "missing token",
+			setup: func(t *testing.T) {
+				t.Setenv("TELEGRAM_CHAT_ID", "chat-123")
+				t.Setenv("TELEGRAM_API_URL", "https://api.telegram.example")
+				t.Setenv("TELEGRAM_TIMEOUT", "2s")
+			},
+			wantErr: "TELEGRAM_BOT_TOKEN",
+		},
+		{
+			name: "missing chat id",
+			setup: func(t *testing.T) {
+				t.Setenv("TELEGRAM_BOT_TOKEN", "bot-token")
+				t.Setenv("TELEGRAM_API_URL", "https://api.telegram.example")
+				t.Setenv("TELEGRAM_TIMEOUT", "2s")
+			},
+			wantErr: "TELEGRAM_CHAT_ID",
+		},
+		{
+			name: "missing api url",
+			setup: func(t *testing.T) {
+				t.Setenv("TELEGRAM_BOT_TOKEN", "bot-token")
+				t.Setenv("TELEGRAM_CHAT_ID", "chat-123")
+				t.Setenv("TELEGRAM_TIMEOUT", "2s")
+			},
+			wantErr: "TELEGRAM_API_URL",
+		},
+		{
+			name: "missing timeout",
+			setup: func(t *testing.T) {
+				t.Setenv("TELEGRAM_BOT_TOKEN", "bot-token")
+				t.Setenv("TELEGRAM_CHAT_ID", "chat-123")
+				t.Setenv("TELEGRAM_API_URL", "https://api.telegram.example")
+			},
+			wantErr: "TELEGRAM_TIMEOUT",
+		},
+		{
+			name: "non-positive timeout",
+			setup: func(t *testing.T) {
+				t.Setenv("TELEGRAM_BOT_TOKEN", "bot-token")
+				t.Setenv("TELEGRAM_CHAT_ID", "chat-123")
+				t.Setenv("TELEGRAM_API_URL", "https://api.telegram.example")
+				t.Setenv("TELEGRAM_TIMEOUT", "0")
+			},
+			wantErr: "TELEGRAM_TIMEOUT",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isolateEnv(t)
+			t.Setenv("TELEGRAM_NOTIFICATIONS_ENABLED", "true")
+			tt.setup(t)
+
+			_, err := Load()
+			if err == nil {
+				t.Fatal("Load() error = nil, want non-nil")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Load() error = %q, want substring %q", err.Error(), tt.wantErr)
+			}
+		})
 	}
 }
 
@@ -665,5 +794,283 @@ func writeDotEnv(t *testing.T, content string) {
 
 	if err := os.WriteFile(filepath.Join(".", ".env"), []byte(strings.TrimSpace(content)+"\n"), 0600); err != nil {
 		t.Fatalf("write .env: %v", err)
+	}
+}
+
+func minimalValidLinearConfig() LinearTaskManagerConfig {
+	return LinearTaskManagerConfig{
+		APIURL:                     defaultLinearAPIURL,
+		APIToken:                   "linear-token",
+		ProjectID:                  "project-123",
+		ReadyToProposeStateID:      "state-propose",
+		ReadyToCodeStateID:         "state-code",
+		ReadyToArchiveStateID:      "state-archive",
+		ProposingInProgressStateID: "state-proposing-progress",
+		CodeInProgressStateID:      "state-code-progress",
+		ArchivingInProgressStateID: "state-archiving-progress",
+		NeedProposalReviewStateID:  "state-proposal-review",
+		NeedCodeReviewStateID:      "state-code-review",
+		NeedArchiveReviewStateID:   "state-archive-review",
+	}
+}
+
+func sliceContainsAll(haystack []string, needles []string) bool {
+	seen := make(map[string]struct{}, len(haystack))
+	for _, h := range haystack {
+		seen[h] = struct{}{}
+	}
+	for _, n := range needles {
+		if _, ok := seen[n]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func TestLoadAIReviewStatesAndReviewerSlots(t *testing.T) {
+	isolateEnv(t)
+	t.Setenv("LINEAR_STATE_NEED_PROPOSAL_AI_REVIEW_ID", "p-ai")
+	t.Setenv("LINEAR_STATE_NEED_CODE_AI_REVIEW_ID", "c-ai")
+	t.Setenv("LINEAR_STATE_NEED_ARCHIVE_AI_REVIEW_ID", "a-ai")
+	t.Setenv("REVIEW_ROLE_PRIMARY", "claude")
+	t.Setenv("REVIEW_ROLE_SECONDARY", "codex")
+	t.Setenv("REVIEW_PRIMARY_MODEL", "claude-opus")
+	t.Setenv("REVIEW_SECONDARY_MODEL", "gpt-5")
+	t.Setenv("REVIEW_PRIMARY_EXECUTOR_PATH", "/usr/local/bin/claude")
+	t.Setenv("REVIEW_SECONDARY_EXECUTOR_PATH", "/usr/local/bin/codex")
+	t.Setenv("REVIEW_MAX_CONTEXT_BYTES", "131072")
+	t.Setenv("REVIEW_PARSE_REPAIR_RETRIES", "3")
+	t.Setenv("REVIEW_PROMPT_DIR", "/tmp/review-prompts")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned error: %v", err)
+	}
+
+	if cfg.TaskManager.NeedProposalAIReviewStateID != "p-ai" {
+		t.Fatalf("NeedProposalAIReviewStateID = %q", cfg.TaskManager.NeedProposalAIReviewStateID)
+	}
+	if cfg.TaskManager.NeedCodeAIReviewStateID != "c-ai" {
+		t.Fatalf("NeedCodeAIReviewStateID = %q", cfg.TaskManager.NeedCodeAIReviewStateID)
+	}
+	if cfg.TaskManager.NeedArchiveAIReviewStateID != "a-ai" {
+		t.Fatalf("NeedArchiveAIReviewStateID = %q", cfg.TaskManager.NeedArchiveAIReviewStateID)
+	}
+
+	if cfg.Review.PrimarySlot != "claude" {
+		t.Fatalf("PrimarySlot = %q", cfg.Review.PrimarySlot)
+	}
+	if cfg.Review.SecondarySlot != "codex" {
+		t.Fatalf("SecondarySlot = %q", cfg.Review.SecondarySlot)
+	}
+	if cfg.Review.PrimaryModel != "claude-opus" {
+		t.Fatalf("PrimaryModel = %q", cfg.Review.PrimaryModel)
+	}
+	if cfg.Review.SecondaryModel != "gpt-5" {
+		t.Fatalf("SecondaryModel = %q", cfg.Review.SecondaryModel)
+	}
+	if cfg.Review.PrimaryExecutorPath != "/usr/local/bin/claude" {
+		t.Fatalf("PrimaryExecutorPath = %q", cfg.Review.PrimaryExecutorPath)
+	}
+	if cfg.Review.SecondaryExecutorPath != "/usr/local/bin/codex" {
+		t.Fatalf("SecondaryExecutorPath = %q", cfg.Review.SecondaryExecutorPath)
+	}
+	if cfg.Review.MaxContextBytes != 131072 {
+		t.Fatalf("MaxContextBytes = %d", cfg.Review.MaxContextBytes)
+	}
+	if cfg.Review.ParseRepairRetries != 3 {
+		t.Fatalf("ParseRepairRetries = %d", cfg.Review.ParseRepairRetries)
+	}
+	if cfg.Review.PromptDir != "/tmp/review-prompts" {
+		t.Fatalf("PromptDir = %q", cfg.Review.PromptDir)
+	}
+
+	if !cfg.Review.Enabled(cfg.TaskManager) {
+		t.Fatal("Enabled() = false, want true with all reviewer + AI-review state config populated")
+	}
+}
+
+func TestLoadUsesReviewDefaults(t *testing.T) {
+	isolateEnv(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned error: %v", err)
+	}
+
+	if cfg.Review.MaxContextBytes != defaultReviewMaxContextBytes {
+		t.Fatalf("MaxContextBytes = %d, want %d", cfg.Review.MaxContextBytes, defaultReviewMaxContextBytes)
+	}
+	if cfg.Review.ParseRepairRetries != defaultReviewParseRepairRetries {
+		t.Fatalf("ParseRepairRetries = %d, want %d", cfg.Review.ParseRepairRetries, defaultReviewParseRepairRetries)
+	}
+	if cfg.Review.Enabled(cfg.TaskManager) {
+		t.Fatal("Enabled() = true on default config, want false")
+	}
+}
+
+func TestLoadReturnsErrorForInvalidReviewMaxContextBytes(t *testing.T) {
+	isolateEnv(t)
+	t.Setenv("REVIEW_MAX_CONTEXT_BYTES", "not-a-number")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() error = nil, want non-nil")
+	}
+}
+
+func TestLoadReturnsErrorForInvalidReviewParseRepairRetries(t *testing.T) {
+	isolateEnv(t)
+	t.Setenv("REVIEW_PARSE_REPAIR_RETRIES", "abc")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() error = nil, want non-nil")
+	}
+}
+
+func TestLinearTaskManagerConfigValidateAcceptsAllAIReviewEmpty(t *testing.T) {
+	cfg := minimalValidLinearConfig()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() returned error with all AI-review fields empty: %v", err)
+	}
+}
+
+func TestLinearTaskManagerConfigValidateAcceptsAllAIReviewSet(t *testing.T) {
+	cfg := minimalValidLinearConfig()
+	cfg.NeedProposalAIReviewStateID = "p-ai"
+	cfg.NeedCodeAIReviewStateID = "c-ai"
+	cfg.NeedArchiveAIReviewStateID = "a-ai"
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() returned error with all AI-review fields set: %v", err)
+	}
+}
+
+func TestLinearTaskManagerConfigValidateRejectsPartialAIReview(t *testing.T) {
+	cfg := minimalValidLinearConfig()
+	cfg.NeedProposalAIReviewStateID = "p-ai"
+	// other two intentionally empty
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() error = nil, want non-nil for partial AI-review configuration")
+	}
+
+	msg := err.Error()
+	if !strings.Contains(msg, "AI review") {
+		t.Fatalf("Validate() error = %q, want substring %q", msg, "AI review")
+	}
+	for _, expected := range []string{
+		"LINEAR_STATE_NEED_CODE_AI_REVIEW_ID",
+		"LINEAR_STATE_NEED_ARCHIVE_AI_REVIEW_ID",
+	} {
+		if !strings.Contains(msg, expected) {
+			t.Fatalf("Validate() error = %q, want substring %q", msg, expected)
+		}
+	}
+	// The set field must NOT be reported as missing.
+	if strings.Contains(msg, "LINEAR_STATE_NEED_PROPOSAL_AI_REVIEW_ID") {
+		t.Fatalf("Validate() error %q must not list the set field as missing", msg)
+	}
+}
+
+func TestManagedStateIDsIncludesAIReviewStatesWhenSet(t *testing.T) {
+	cfg := LinearTaskManagerConfig{
+		ReadyToProposeStateID:       "state-propose",
+		ReadyToCodeStateID:          "state-code",
+		ReadyToArchiveStateID:       "state-archive",
+		ProposingInProgressStateID:  "state-proposing-progress",
+		CodeInProgressStateID:       "state-code-progress",
+		ArchivingInProgressStateID:  "state-archiving-progress",
+		NeedProposalAIReviewStateID: "p-ai",
+		NeedCodeAIReviewStateID:     "c-ai",
+		NeedArchiveAIReviewStateID:  "a-ai",
+	}
+
+	got := cfg.ManagedStateIDs()
+	want := []string{"state-propose", "state-code", "state-archive", "p-ai", "c-ai", "a-ai"}
+
+	if len(got) != len(want) {
+		t.Fatalf("ManagedStateIDs() = %#v, want %#v", got, want)
+	}
+	if !sliceContainsAll(got, want) {
+		t.Fatalf("ManagedStateIDs() = %#v missing entries from %#v", got, want)
+	}
+
+	// Dedup: an AI-review state that duplicates an existing managed state must appear once.
+	cfg.NeedProposalAIReviewStateID = "state-propose"
+	deduped := cfg.ManagedStateIDs()
+	count := 0
+	for _, id := range deduped {
+		if id == "state-propose" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("ManagedStateIDs() = %#v, want %q to appear once", deduped, "state-propose")
+	}
+}
+
+func TestManagedStateIDsExcludesAIReviewStatesWhenEmpty(t *testing.T) {
+	cfg := LinearTaskManagerConfig{
+		ReadyToProposeStateID:      "state-propose",
+		ReadyToCodeStateID:         "state-code",
+		ReadyToArchiveStateID:      "state-archive",
+		ProposingInProgressStateID: "state-proposing-progress",
+		CodeInProgressStateID:      "state-code-progress",
+		ArchivingInProgressStateID: "state-archiving-progress",
+	}
+
+	got := cfg.ManagedStateIDs()
+	want := []string{"state-propose", "state-code", "state-archive"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("ManagedStateIDs() = %#v, want %#v", got, want)
+	}
+}
+
+func TestReviewRunnerConfigEnabled(t *testing.T) {
+	tm := minimalValidLinearConfig()
+	tm.NeedProposalAIReviewStateID = "p-ai"
+	tm.NeedCodeAIReviewStateID = "c-ai"
+	tm.NeedArchiveAIReviewStateID = "a-ai"
+
+	full := ReviewRunnerConfig{
+		PrimarySlot:           "claude",
+		SecondarySlot:         "codex",
+		PrimaryModel:          "claude-opus",
+		SecondaryModel:        "gpt-5",
+		PrimaryExecutorPath:   "/usr/local/bin/claude",
+		SecondaryExecutorPath: "/usr/local/bin/codex",
+	}
+
+	if !full.Enabled(tm) {
+		t.Fatal("Enabled() = false, want true when all reviewer + AI-review state fields populated")
+	}
+
+	// Missing one AI-review state disables.
+	tmMissing := tm
+	tmMissing.NeedCodeAIReviewStateID = ""
+	if full.Enabled(tmMissing) {
+		t.Fatal("Enabled() = true with missing AI-review state, want false")
+	}
+
+	// Missing reviewer slot disables.
+	missingSlot := full
+	missingSlot.SecondarySlot = ""
+	if missingSlot.Enabled(tm) {
+		t.Fatal("Enabled() = true with missing secondary slot, want false")
+	}
+
+	// Missing reviewer model disables.
+	missingModel := full
+	missingModel.PrimaryModel = "  "
+	if missingModel.Enabled(tm) {
+		t.Fatal("Enabled() = true with whitespace-only primary model, want false")
+	}
+
+	// Missing executor path disables.
+	missingExec := full
+	missingExec.SecondaryExecutorPath = ""
+	if missingExec.Enabled(tm) {
+		t.Fatal("Enabled() = true with missing secondary executor path, want false")
 	}
 }

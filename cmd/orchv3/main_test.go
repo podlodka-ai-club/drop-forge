@@ -14,7 +14,9 @@ import (
 	"orchv3/internal/archiverunner"
 	"orchv3/internal/config"
 	"orchv3/internal/coreorch"
+	"orchv3/internal/events"
 	"orchv3/internal/proposalrunner"
+	"orchv3/internal/reviewrunner"
 	"orchv3/internal/steplog"
 	"orchv3/internal/taskmanager"
 )
@@ -62,7 +64,7 @@ func TestRunWithoutTaskStartsProposalMonitor(t *testing.T) {
 	var stderr bytes.Buffer
 	deps := testDeps()
 	monitor := &fakeProposalMonitor{}
-	deps.newProposalOrchestrator = func(cfg config.Config, tasks coreorch.TaskManager, proposalRunner coreorch.ProposalRunner, applyRunner coreorch.ApplyRunner, archiveRunner coreorch.ArchiveRunner, logOut io.Writer) proposalMonitor {
+	deps.newProposalOrchestrator = func(cfg config.Config, tasks coreorch.TaskManager, proposalRunner coreorch.ProposalRunner, applyRunner coreorch.ApplyRunner, archiveRunner coreorch.ArchiveRunner, reviewRunner coreorch.ReviewRunner, logOut io.Writer) proposalMonitor {
 		return monitor
 	}
 
@@ -121,36 +123,35 @@ func TestRunDefaultWiresDependenciesAndKeepsStdoutEmpty(t *testing.T) {
 	var stderr bytes.Buffer
 	deps := testDeps()
 	state := &cliTestState{}
-	deps.newTaskManager = func(cfg config.LinearTaskManagerConfig, logOut io.Writer) coreorch.TaskManager {
+	deps.newTaskManager = func(cfg config.LinearTaskManagerConfig, logOut io.Writer, publisher events.Publisher) coreorch.TaskManager {
 		state.taskManagerConfig = cfg
 		state.taskManagerLogOut = logOut
+		state.taskManagerPublisher = publisher
 		return &fakeTaskManager{}
 	}
-	deps.newProposalRunner = func(cfg config.ProposalRunnerConfig, service string, logOut io.Writer) singleProposalRunner {
+	deps.newProposalRunner = func(cfg config.Config, logOut io.Writer) singleProposalRunner {
 		state.runnerConfig = cfg
-		state.runnerService = service
 		state.runnerLogOut = logOut
 		return &fakeSingleProposalRunner{prURL: "https://github.com/example/repo/pull/1"}
 	}
-	deps.newApplyRunner = func(cfg config.ProposalRunnerConfig, service string, logOut io.Writer) singleApplyRunner {
+	deps.newApplyRunner = func(cfg config.Config, logOut io.Writer) singleApplyRunner {
 		state.applyRunnerConfig = cfg
-		state.applyRunnerService = service
 		state.applyRunnerLogOut = logOut
 		return &fakeSingleApplyRunner{}
 	}
-	deps.newArchiveRunner = func(cfg config.ProposalRunnerConfig, service string, logOut io.Writer) singleArchiveRunner {
+	deps.newArchiveRunner = func(cfg config.Config, logOut io.Writer) singleArchiveRunner {
 		state.archiveRunnerConfig = cfg
-		state.archiveRunnerService = service
 		state.archiveRunnerLogOut = logOut
 		return &fakeSingleArchiveRunner{}
 	}
-	deps.newProposalOrchestrator = func(cfg config.Config, tasks coreorch.TaskManager, proposalRunner coreorch.ProposalRunner, applyRunner coreorch.ApplyRunner, archiveRunner coreorch.ArchiveRunner, logOut io.Writer) proposalMonitor {
+	deps.newProposalOrchestrator = func(cfg config.Config, tasks coreorch.TaskManager, proposalRunner coreorch.ProposalRunner, applyRunner coreorch.ApplyRunner, archiveRunner coreorch.ArchiveRunner, reviewRunner coreorch.ReviewRunner, logOut io.Writer) proposalMonitor {
 		state.orchestratorConfig = cfg
 		state.orchestratorLogOut = logOut
 		state.orchestratorTaskManager = tasks
 		state.orchestratorRunner = proposalRunner
 		state.orchestratorApplyRunner = applyRunner
 		state.orchestratorArchiveRunner = archiveRunner
+		state.orchestratorReviewRunner = reviewRunner
 		return &fakeProposalMonitor{}
 	}
 
@@ -164,23 +165,23 @@ func TestRunDefaultWiresDependenciesAndKeepsStdoutEmpty(t *testing.T) {
 	if state.taskManagerConfig.ProjectID != "project-123" {
 		t.Fatalf("task manager project = %q", state.taskManagerConfig.ProjectID)
 	}
-	if state.runnerConfig.RepositoryURL != "git@github.com:example/repo.git" {
-		t.Fatalf("runner repository = %q", state.runnerConfig.RepositoryURL)
+	if state.runnerConfig.ProposalRunner.RepositoryURL != "git@github.com:example/repo.git" {
+		t.Fatalf("runner repository = %q", state.runnerConfig.ProposalRunner.RepositoryURL)
 	}
-	if state.runnerService != "orchv3-test" {
-		t.Fatalf("runner service = %q", state.runnerService)
+	if state.runnerConfig.AppName != "orchv3-test" {
+		t.Fatalf("runner service = %q", state.runnerConfig.AppName)
 	}
-	if state.applyRunnerConfig.RepositoryURL != "git@github.com:example/repo.git" {
-		t.Fatalf("apply runner repository = %q", state.applyRunnerConfig.RepositoryURL)
+	if state.applyRunnerConfig.ProposalRunner.RepositoryURL != "git@github.com:example/repo.git" {
+		t.Fatalf("apply runner repository = %q", state.applyRunnerConfig.ProposalRunner.RepositoryURL)
 	}
-	if state.applyRunnerService != "orchv3-test" {
-		t.Fatalf("apply runner service = %q", state.applyRunnerService)
+	if state.applyRunnerConfig.AppName != "orchv3-test" {
+		t.Fatalf("apply runner service = %q", state.applyRunnerConfig.AppName)
 	}
-	if state.archiveRunnerConfig.RepositoryURL != "git@github.com:example/repo.git" {
-		t.Fatalf("archive runner repository = %q", state.archiveRunnerConfig.RepositoryURL)
+	if state.archiveRunnerConfig.ProposalRunner.RepositoryURL != "git@github.com:example/repo.git" {
+		t.Fatalf("archive runner repository = %q", state.archiveRunnerConfig.ProposalRunner.RepositoryURL)
 	}
-	if state.archiveRunnerService != "orchv3-test" {
-		t.Fatalf("archive runner service = %q", state.archiveRunnerService)
+	if state.archiveRunnerConfig.AppName != "orchv3-test" {
+		t.Fatalf("archive runner service = %q", state.archiveRunnerConfig.AppName)
 	}
 	if state.orchestratorConfig.TaskManager.ReadyToProposeStateID != "state-propose" {
 		t.Fatalf("orchestrator ready state = %q", state.orchestratorConfig.TaskManager.ReadyToProposeStateID)
@@ -203,8 +204,127 @@ func TestRunDefaultWiresDependenciesAndKeepsStdoutEmpty(t *testing.T) {
 	if state.taskManagerLogOut == nil || state.runnerLogOut == nil || state.applyRunnerLogOut == nil || state.archiveRunnerLogOut == nil || state.orchestratorLogOut == nil {
 		t.Fatal("log outputs should be wired")
 	}
+	if state.taskManagerPublisher == nil {
+		t.Fatal("task manager publisher should be wired")
+	}
 	if state.orchestratorTaskManager == nil || state.orchestratorRunner == nil || state.orchestratorApplyRunner == nil || state.orchestratorArchiveRunner == nil {
 		t.Fatal("orchestrator dependencies should be wired")
+	}
+	if state.orchestratorReviewRunner != nil {
+		t.Fatalf("orchestrator review runner = %v, want nil when AI review disabled", state.orchestratorReviewRunner)
+	}
+}
+
+func TestRunWithDepsWiresReviewRunnerWhenAIReviewConfigured(t *testing.T) {
+	stdin := emptyTempFile(t)
+	defer stdin.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	deps := testDeps()
+	deps.loadConfig = func() (config.Config, error) {
+		return config.Config{
+			AppName: "orchv3-test",
+			ProposalRunner: config.ProposalRunnerConfig{
+				RepositoryURL: "git@github.com:example/repo.git",
+			},
+			ProposalPollInterval: 45 * time.Second,
+			TaskManager: config.LinearTaskManagerConfig{
+				ProjectID:                   "project-123",
+				ReadyToProposeStateID:       "state-propose",
+				ReadyToCodeStateID:          "state-code",
+				ReadyToArchiveStateID:       "state-archive",
+				ProposingInProgressStateID:  "state-proposing-progress",
+				CodeInProgressStateID:       "state-code-progress",
+				ArchivingInProgressStateID:  "state-archiving-progress",
+				NeedProposalReviewStateID:   "state-proposal-review",
+				NeedCodeReviewStateID:       "state-code-review",
+				NeedArchiveReviewStateID:    "state-archive-review",
+				NeedProposalAIReviewStateID: "state-proposal-ai-review",
+				NeedCodeAIReviewStateID:     "state-code-ai-review",
+				NeedArchiveAIReviewStateID:  "state-archive-ai-review",
+			},
+			Review: config.ReviewRunnerConfig{
+				PrimarySlot:           "codex",
+				SecondarySlot:         "codex",
+				PrimaryModel:          "gpt-5",
+				SecondaryModel:        "gpt-5",
+				PrimaryExecutorPath:   "codex",
+				SecondaryExecutorPath: "codex",
+			},
+		}, nil
+	}
+
+	state := &cliTestState{}
+	stub := stubReviewRunner{}
+	deps.newReviewRunner = func(cfg config.Config, logOut io.Writer) singleReviewRunner {
+		state.reviewRunnerConfig = cfg
+		state.reviewRunnerLogOut = logOut
+		return stub
+	}
+	deps.newProposalOrchestrator = func(cfg config.Config, tasks coreorch.TaskManager, proposalRunner coreorch.ProposalRunner, applyRunner coreorch.ApplyRunner, archiveRunner coreorch.ArchiveRunner, reviewRunner coreorch.ReviewRunner, logOut io.Writer) proposalMonitor {
+		state.orchestratorConfig = cfg
+		state.orchestratorReviewRunner = reviewRunner
+		return &fakeProposalMonitor{}
+	}
+
+	exitCode := runWithDeps(nil, stdin, &stdout, &stderr, deps)
+	if exitCode != 0 {
+		t.Fatalf("exitCode = %d, want 0", exitCode)
+	}
+	if state.reviewRunnerConfig.AppName != "orchv3-test" {
+		t.Fatalf("review runner config service = %q", state.reviewRunnerConfig.AppName)
+	}
+	if state.reviewRunnerLogOut == nil {
+		t.Fatal("review runner log output should be wired")
+	}
+	if state.orchestratorReviewRunner == nil {
+		t.Fatal("orchestrator review runner should be non-nil when AI review configured")
+	}
+	if got, ok := state.orchestratorReviewRunner.(stubReviewRunner); !ok || got != stub {
+		t.Fatalf("orchestrator review runner = %#v, want stubReviewRunner sentinel", state.orchestratorReviewRunner)
+	}
+	if !state.orchestratorConfig.Review.Enabled(state.orchestratorConfig.TaskManager) {
+		t.Fatal("Review.Enabled should be true under AI-review env")
+	}
+}
+
+func TestBuildEventPublisherRegistersTelegramOnlyWhenEnabled(t *testing.T) {
+	taskManagerCfg := config.LinearTaskManagerConfig{
+		NeedProposalReviewStateID: "state-proposal-review",
+		NeedCodeReviewStateID:     "state-code-review",
+		NeedArchiveReviewStateID:  "state-archive-review",
+	}
+	disabledPublisher, err := buildEventPublisher(config.TelegramConfig{}, taskManagerCfg, io.Discard)
+	if err != nil {
+		t.Fatalf("buildEventPublisher(disabled) returned error: %v", err)
+	}
+	if err := disabledPublisher.Publish(context.Background(), events.Event{
+		Type:    events.TaskStatusChangedType,
+		Payload: events.TaskStatusChanged{TaskID: "task-1", TargetStateID: "state-1"},
+	}); err != nil {
+		t.Fatalf("disabled publisher Publish() returned error: %v", err)
+	}
+
+	enabledPublisher, err := buildEventPublisher(config.TelegramConfig{
+		Enabled:  true,
+		BotToken: "token-123",
+		ChatID:   "chat-456",
+		APIURL:   "http://127.0.0.1:1",
+		Timeout:  time.Millisecond,
+	}, taskManagerCfg, io.Discard)
+	if err != nil {
+		t.Fatalf("buildEventPublisher(enabled) returned error: %v", err)
+	}
+	err = enabledPublisher.Publish(context.Background(), events.Event{
+		Type:    events.TaskStatusChangedType,
+		Payload: events.TaskStatusChanged{TaskID: "task-1", TargetStateID: "state-code-review"},
+	})
+	if err == nil {
+		t.Fatal("enabled publisher Publish() error = nil, want telegram subscriber delivery error")
+	}
+	if !strings.Contains(err.Error(), "send telegram message") {
+		t.Fatalf("Publish() error = %q, want telegram delivery context", err.Error())
 	}
 }
 
@@ -228,7 +348,7 @@ func TestDefaultProposalOrchestratorWiresApplyAndArchiveStates(t *testing.T) {
 	apply := &fakeSingleApplyRunner{}
 	archive := &fakeSingleArchiveRunner{}
 
-	orchestrator, ok := defaultDeps().newProposalOrchestrator(cfg, tasks, runner, apply, archive, io.Discard).(*coreorch.Orchestrator)
+	orchestrator, ok := defaultDeps().newProposalOrchestrator(cfg, tasks, runner, apply, archive, nil, io.Discard).(*coreorch.Orchestrator)
 	if !ok {
 		t.Fatalf("orchestrator type = %T, want *coreorch.Orchestrator", orchestrator)
 	}
@@ -259,6 +379,12 @@ func TestDefaultProposalOrchestratorWiresApplyAndArchiveStates(t *testing.T) {
 	if orchestrator.ArchiveRunner != archive {
 		t.Fatal("archive runner should be wired")
 	}
+	if orchestrator.ReviewRunner != nil {
+		t.Fatal("review runner should be nil when no factory result provided")
+	}
+	if orchestrator.Config.AIReviewEnabled {
+		t.Fatal("AIReviewEnabled should be false when Review config is empty")
+	}
 }
 
 func TestRunArgsRejectsManualProposalModeWithoutCallingRunner(t *testing.T) {
@@ -269,7 +395,7 @@ func TestRunArgsRejectsManualProposalModeWithoutCallingRunner(t *testing.T) {
 	var stderr bytes.Buffer
 	runner := &fakeSingleProposalRunner{prURL: "https://github.com/example/repo/pull/42"}
 	deps := testDeps()
-	deps.newProposalRunner = func(cfg config.ProposalRunnerConfig, service string, logOut io.Writer) singleProposalRunner {
+	deps.newProposalRunner = func(cfg config.Config, logOut io.Writer) singleProposalRunner {
 		return runner
 	}
 
@@ -309,7 +435,7 @@ func TestRunStdinRejectsManualProposalModeWithoutCallingRunner(t *testing.T) {
 	var stderr bytes.Buffer
 	runner := &fakeSingleProposalRunner{prURL: "https://github.com/example/repo/pull/42"}
 	deps := testDeps()
-	deps.newProposalRunner = func(cfg config.ProposalRunnerConfig, service string, logOut io.Writer) singleProposalRunner {
+	deps.newProposalRunner = func(cfg config.Config, logOut io.Writer) singleProposalRunner {
 		return runner
 	}
 
@@ -364,21 +490,22 @@ func emptyTempFile(t *testing.T) *os.File {
 type cliTestState struct {
 	taskManagerConfig         config.LinearTaskManagerConfig
 	taskManagerLogOut         io.Writer
-	runnerConfig              config.ProposalRunnerConfig
-	runnerService             string
+	taskManagerPublisher      events.Publisher
+	runnerConfig              config.Config
 	runnerLogOut              io.Writer
-	applyRunnerConfig         config.ProposalRunnerConfig
-	applyRunnerService        string
+	applyRunnerConfig         config.Config
 	applyRunnerLogOut         io.Writer
-	archiveRunnerConfig       config.ProposalRunnerConfig
-	archiveRunnerService      string
+	archiveRunnerConfig       config.Config
 	archiveRunnerLogOut       io.Writer
+	reviewRunnerConfig        config.Config
+	reviewRunnerLogOut        io.Writer
 	orchestratorConfig        config.Config
 	orchestratorLogOut        io.Writer
 	orchestratorTaskManager   coreorch.TaskManager
 	orchestratorRunner        coreorch.ProposalRunner
 	orchestratorApplyRunner   coreorch.ApplyRunner
 	orchestratorArchiveRunner coreorch.ArchiveRunner
+	orchestratorReviewRunner  coreorch.ReviewRunner
 }
 
 type fakeSingleProposalRunner struct {
@@ -412,6 +539,12 @@ func (runner *fakeSingleArchiveRunner) Run(ctx context.Context, input archiverun
 	return runner.err
 }
 
+type stubReviewRunner struct{}
+
+func (stubReviewRunner) Run(_ context.Context, _ reviewrunner.ReviewInput) (reviewrunner.Result, error) {
+	return reviewrunner.Result{}, nil
+}
+
 type fakeTaskManager struct{}
 
 func (manager *fakeTaskManager) GetTasks(ctx context.Context) ([]taskmanager.Task, error) {
@@ -423,6 +556,10 @@ func (manager *fakeTaskManager) AddPR(ctx context.Context, taskID string, prURL 
 }
 
 func (manager *fakeTaskManager) MoveTask(ctx context.Context, taskID string, stateID string) error {
+	return nil
+}
+
+func (manager *fakeTaskManager) MoveTaskWithContext(ctx context.Context, taskID string, stateID string, statusContext taskmanager.StatusChangeContext) error {
 	return nil
 }
 
@@ -464,19 +601,23 @@ func testDeps() appDeps {
 		buildLogger: func(stderr io.Writer, cfg config.Config, warnOut io.Writer) (steplog.Logger, io.Writer, io.Closer, error) {
 			return steplog.NewWithService(stderr, cfg.AppName), stderr, nil, nil
 		},
-		newProposalRunner: func(cfg config.ProposalRunnerConfig, service string, logOut io.Writer) singleProposalRunner {
+		newProposalRunner: func(cfg config.Config, logOut io.Writer) singleProposalRunner {
 			return &fakeSingleProposalRunner{}
 		},
-		newApplyRunner: func(cfg config.ProposalRunnerConfig, service string, logOut io.Writer) singleApplyRunner {
+		newApplyRunner: func(cfg config.Config, logOut io.Writer) singleApplyRunner {
 			return &fakeSingleApplyRunner{}
 		},
-		newArchiveRunner: func(cfg config.ProposalRunnerConfig, service string, logOut io.Writer) singleArchiveRunner {
+		newArchiveRunner: func(cfg config.Config, logOut io.Writer) singleArchiveRunner {
 			return &fakeSingleArchiveRunner{}
 		},
-		newTaskManager: func(cfg config.LinearTaskManagerConfig, logOut io.Writer) coreorch.TaskManager {
+		newReviewRunner: func(cfg config.Config, logOut io.Writer) singleReviewRunner {
+			return nil
+		},
+		newEventPublisher: buildEventPublisher,
+		newTaskManager: func(cfg config.LinearTaskManagerConfig, logOut io.Writer, publisher events.Publisher) coreorch.TaskManager {
 			return &fakeTaskManager{}
 		},
-		newProposalOrchestrator: func(cfg config.Config, tasks coreorch.TaskManager, proposalRunner coreorch.ProposalRunner, applyRunner coreorch.ApplyRunner, archiveRunner coreorch.ArchiveRunner, logOut io.Writer) proposalMonitor {
+		newProposalOrchestrator: func(cfg config.Config, tasks coreorch.TaskManager, proposalRunner coreorch.ProposalRunner, applyRunner coreorch.ApplyRunner, archiveRunner coreorch.ArchiveRunner, reviewRunner coreorch.ReviewRunner, logOut io.Writer) proposalMonitor {
 			return &fakeProposalMonitor{}
 		},
 	}
